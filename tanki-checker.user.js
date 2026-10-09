@@ -1,10 +1,9 @@
 // ==UserScript==
 // @name         Tanki Online — Checker prod. by yuuairline
 // @namespace    http://tampermonkey.net/
-// @version      1.0.7
-// @description  Checker + Daily Rubies + FastValid + auto 2FA
+// @version      1.0.1
+// @description  Checker + auto 2FA enable
 // @author       yuuairline
-// @match        https://*.tankionline.com/play/*
 // @match        https://*.tankionline.com/play/
 // @grant        GM_setValue
 // @grant        GM_getValue
@@ -13,8 +12,6 @@
 // @grant        GM_xmlhttpRequest
 // @connect      *
 // @run-at       document-end
-// @updateURL    https://raw.githubusercontent.com/yuuairline/yuuline-checker/main/tanki-checker.user.js
-// @downloadURL  https://raw.githubusercontent.com/yuuairline/yuuline-checker/main/tanki-checker.user.js
 // ==/UserScript==
 
 (function () {
@@ -6187,7 +6184,6 @@ async function testDiscordNotification() {
 #tc-detail-modal.tchecker-ui[data-theme="dark"],
 #tc-rubies-add-modal.tchecker-ui[data-theme="dark"],
 #tc-assets-modal.tchecker-ui[data-theme="dark"],
-#tc-confirm-modal.tchecker-ui[data-theme="dark"],
 .tc-toast-stack.tchecker-ui[data-theme="dark"]{
   --tc-bg:#0b0b0d;
   --tc-bg-2:#111114;
@@ -6219,7 +6215,6 @@ async function testDiscordNotification() {
 #tc-detail-modal.tchecker-ui[data-theme="light"],
 #tc-rubies-add-modal.tchecker-ui[data-theme="light"],
 #tc-assets-modal.tchecker-ui[data-theme="light"],
-#tc-confirm-modal.tchecker-ui[data-theme="light"],
 .tc-toast-stack.tchecker-ui[data-theme="light"]{
   --tc-bg:#f6f4ef;
   --tc-bg-2:#efece4;
@@ -6746,97 +6741,6 @@ async function testDiscordNotification() {
 .tc-toast.error{border-color:rgba(255,92,104,.35)}
 .tc-toast.warning{border-color:rgba(240,180,41,.35)}
 
-/* ===== CONFIRM / PROMPT MODAL ===== */
-#tc-confirm-modal{
-  position:fixed;inset:0;z-index:100020;display:none;align-items:center;justify-content:center;
-  background:rgba(0,0,0,.72);backdrop-filter:blur(12px);
-  color:var(--tc-text) !important;
-}
-#tc-confirm-modal.open{display:flex}
-#tc-confirm-modal .tc-confirm-card{
-  width:min(420px,calc(100vw - 32px));
-  background:var(--tc-bg-2) !important;
-  border:1px solid var(--tc-border);
-  border-radius:18px;
-  box-shadow:var(--tc-shadow);
-  padding:20px 20px 16px;
-  color:var(--tc-text) !important;
-  transform:translateY(8px) scale(.98);
-  transition:transform .18s ease;
-}
-#tc-confirm-modal.open .tc-confirm-card{transform:translateY(0) scale(1)}
-#tc-confirm-modal .tc-confirm-kicker{
-  font-size:10px;font-weight:800;letter-spacing:.12em;text-transform:uppercase;
-  color:var(--tc-text-dim) !important;margin-bottom:6px;
-}
-#tc-confirm-modal .tc-confirm-title{
-  font-size:17px;font-weight:800;color:var(--tc-text) !important;margin:0 0 8px;letter-spacing:-.02em;
-}
-#tc-confirm-modal .tc-confirm-msg{
-  font-size:13px;line-height:1.55;color:var(--tc-text-muted) !important;
-  white-space:pre-wrap;margin:0 0 16px;
-}
-#tc-confirm-modal .tc-confirm-input{
-  width:100%;height:40px;padding:0 12px;margin:0 0 16px;
-  border-radius:11px;border:1px solid var(--tc-border);
-  background:var(--tc-surface) !important;color:var(--tc-text) !important;
-  font:13px/1.4 inherit;outline:none;
-}
-#tc-confirm-modal .tc-confirm-input:focus{
-  border-color:var(--tc-accent);box-shadow:0 0 0 3px var(--tc-accent-soft);
-}
-#tc-confirm-modal .tc-confirm-actions{display:flex;justify-content:flex-end;gap:8px}
-#tc-confirm-modal .tc-btn{min-height:36px;padding:0 14px;border-radius:10px;border:1px solid transparent;
-  font-size:12px;font-weight:700;font-family:inherit;cursor:pointer}
-#tc-confirm-modal .tc-btn-secondary{
-  background:var(--tc-surface) !important;color:var(--tc-text) !important;border-color:var(--tc-border);
-}
-#tc-confirm-modal .tc-btn-primary{
-  background:linear-gradient(135deg,var(--tc-accent),var(--tc-accent-strong));
-  color:#fff !important;
-}
-#tc-confirm-modal .tc-btn-danger{
-  background:rgba(255,92,104,.14) !important;color:var(--tc-danger) !important;
-  border-color:rgba(255,92,104,.28);
-}
-
-/* ===== GLOBAL SCROLLBARS (menu + modals) ===== */
-#tc-menu.tchecker-ui *:not(textarea)::-webkit-scrollbar,
-#tc-detail-modal.tchecker-ui *::-webkit-scrollbar,
-#tc-assets-modal.tchecker-ui *::-webkit-scrollbar,
-#tc-rubies-add-modal.tchecker-ui *::-webkit-scrollbar,
-#tc-confirm-modal.tchecker-ui *::-webkit-scrollbar{
-  width:8px;height:8px;
-}
-#tc-menu.tchecker-ui *:not(textarea)::-webkit-scrollbar-track,
-#tc-detail-modal.tchecker-ui *::-webkit-scrollbar-track,
-#tc-assets-modal.tchecker-ui *::-webkit-scrollbar-track,
-#tc-rubies-add-modal.tchecker-ui *::-webkit-scrollbar-track{
-  background:transparent;
-}
-#tc-menu.tchecker-ui *:not(textarea)::-webkit-scrollbar-thumb,
-#tc-detail-modal.tchecker-ui *::-webkit-scrollbar-thumb,
-#tc-assets-modal.tchecker-ui *::-webkit-scrollbar-thumb,
-#tc-rubies-add-modal.tchecker-ui *::-webkit-scrollbar-thumb{
-  background:var(--tc-scroll-thumb);
-  border-radius:8px;
-  border:2px solid transparent;
-  background-clip:padding-box;
-}
-#tc-menu.tchecker-ui *:not(textarea)::-webkit-scrollbar-thumb:hover,
-#tc-detail-modal.tchecker-ui *::-webkit-scrollbar-thumb:hover,
-#tc-assets-modal.tchecker-ui *::-webkit-scrollbar-thumb:hover{
-  background:var(--tc-border-2);
-  background-clip:padding-box;
-}
-#tc-menu.tchecker-ui,
-#tc-detail-modal.tchecker-ui,
-#tc-assets-modal.tchecker-ui,
-#tc-rubies-add-modal.tchecker-ui{
-  scrollbar-width:thin;
-  scrollbar-color:var(--tc-scroll-thumb) transparent;
-}
-
 /* ===== PROXY BLOCK (settings) ===== */
 #tc-menu #proxy-rotation-settings{
   margin-top:22px;padding:14px;border:1px solid var(--tc-border);border-radius:14px;
@@ -6904,124 +6808,6 @@ async function testDiscordNotification() {
         pause:'<svg viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="4" width="4" height="16" rx="1"/><rect x="14" y="4" width="4" height="16" rx="1"/></svg>'
     };
 
-
-    // =========================================================
-    // UI — CONFIRM / PROMPT MODAL
-    // =========================================================
-    function ensureConfirmModal() {
-        let modal = document.getElementById("tc-confirm-modal");
-        if (modal) return modal;
-        modal = document.createElement("div");
-        modal.id = "tc-confirm-modal";
-        modal.className = "tchecker-ui";
-        modal.setAttribute("data-theme", CONFIG.THEME || "dark");
-        modal.innerHTML = `
-            <div class="tc-confirm-card">
-                <div class="tc-confirm-kicker" id="tc-confirm-kicker">Подтверждение</div>
-                <div class="tc-confirm-title" id="tc-confirm-title">Подтвердите действие</div>
-                <div class="tc-confirm-msg" id="tc-confirm-msg"></div>
-                <input class="tc-confirm-input" id="tc-confirm-input" type="text" style="display:none" />
-                <div class="tc-confirm-actions">
-                    <button type="button" class="tc-btn tc-btn-secondary" id="tc-confirm-cancel">Отмена</button>
-                    <button type="button" class="tc-btn tc-btn-primary" id="tc-confirm-ok">ОК</button>
-                </div>
-            </div>`;
-        document.body.appendChild(modal);
-        return modal;
-    }
-
-    function showConfirmModal(opts = {}) {
-        const {
-            title = "Подтвердите действие",
-            message = "",
-            confirmText = "Подтвердить",
-            cancelText = "Отмена",
-            danger = false,
-            kicker = "Подтверждение"
-        } = opts;
-        return new Promise((resolve) => {
-            const modal = ensureConfirmModal();
-            modal.setAttribute("data-theme", CONFIG.THEME || "dark");
-            modal.querySelector("#tc-confirm-kicker").textContent = kicker;
-            modal.querySelector("#tc-confirm-title").textContent = title;
-            modal.querySelector("#tc-confirm-msg").textContent = message;
-            const input = modal.querySelector("#tc-confirm-input");
-            input.style.display = "none";
-            input.value = "";
-            const okBtn = modal.querySelector("#tc-confirm-ok");
-            const cancelBtn = modal.querySelector("#tc-confirm-cancel");
-            okBtn.textContent = confirmText;
-            cancelBtn.textContent = cancelText;
-            okBtn.className = "tc-btn " + (danger ? "tc-btn-danger" : "tc-btn-primary");
-
-            const close = (val) => {
-                modal.classList.remove("open");
-                okBtn.onclick = null;
-                cancelBtn.onclick = null;
-                modal.onclick = null;
-                document.removeEventListener("keydown", onKey);
-                resolve(val);
-            };
-            const onKey = (e) => {
-                if (e.key === "Escape") close(false);
-                if (e.key === "Enter") close(true);
-            };
-            okBtn.onclick = () => close(true);
-            cancelBtn.onclick = () => close(false);
-            modal.onclick = (e) => { if (e.target === modal) close(false); };
-            document.addEventListener("keydown", onKey);
-            modal.classList.add("open");
-            setTimeout(() => okBtn.focus(), 30);
-        });
-    }
-
-    function showPromptModal(opts = {}) {
-        const {
-            title = "Ввод",
-            message = "",
-            placeholder = "",
-            defaultValue = "",
-            confirmText = "ОК",
-            cancelText = "Отмена",
-            kicker = "Ввод данных"
-        } = opts;
-        return new Promise((resolve) => {
-            const modal = ensureConfirmModal();
-            modal.setAttribute("data-theme", CONFIG.THEME || "dark");
-            modal.querySelector("#tc-confirm-kicker").textContent = kicker;
-            modal.querySelector("#tc-confirm-title").textContent = title;
-            modal.querySelector("#tc-confirm-msg").textContent = message;
-            const input = modal.querySelector("#tc-confirm-input");
-            input.style.display = "block";
-            input.placeholder = placeholder || "";
-            input.value = defaultValue || "";
-            const okBtn = modal.querySelector("#tc-confirm-ok");
-            const cancelBtn = modal.querySelector("#tc-confirm-cancel");
-            okBtn.textContent = confirmText;
-            cancelBtn.textContent = cancelText;
-            okBtn.className = "tc-btn tc-btn-primary";
-
-            const close = (val) => {
-                modal.classList.remove("open");
-                okBtn.onclick = null;
-                cancelBtn.onclick = null;
-                modal.onclick = null;
-                document.removeEventListener("keydown", onKey);
-                resolve(val);
-            };
-            const onKey = (e) => {
-                if (e.key === "Escape") close(null);
-                if (e.key === "Enter") close(input.value);
-            };
-            okBtn.onclick = () => close(input.value);
-            cancelBtn.onclick = () => close(null);
-            modal.onclick = (e) => { if (e.target === modal) close(null); };
-            document.addEventListener("keydown", onKey);
-            modal.classList.add("open");
-            setTimeout(() => { input.focus(); input.select(); }, 30);
-        });
-    }
-
     function createMenu() {
         if (document.getElementById("tc-menu")) return;
         injectStyles();
@@ -7038,8 +6824,8 @@ async function testDiscordNotification() {
         <div id="tc-panel">
             <aside class="tc-tabs">
                 <div class="tc-brand">
-                    <div class="tc-brand-mark">TC</div>
-                    <div class="tc-brand-text"><b>TANKI CHECKER</b><small>v8.5.1 · FAST VALID DB</small></div>
+                    <div class="tc-brand-mark">yal</div>
+                    <div class="tc-brand-text"><b>TANKI CHECKER</b><small>1.0.1</small></div>
                 </div>
                 <div class="tc-nav">
                     <div class="tc-nav-label">Main</div>
@@ -7054,7 +6840,7 @@ async function testDiscordNotification() {
                     <div class="tc-nav-label">System</div>
                     <button class="tc-tab" data-tab="settings">${ICONS.settings}<span>Settings</span></button>
                 </div>
-                <div class="tc-sidebar-footer">ses · v8.5.1 · FAST VALID DB</div>
+                <div class="tc-sidebar-footer">prod. by yuuairline</div>
             </aside>
             <header class="tc-header">
                 <div class="tc-header-left">
@@ -7227,7 +7013,7 @@ ivan13000;d1f2y3z4
 
         document.getElementById("tc-theme-toggle").addEventListener("click", toggleTheme);
 
-        document.getElementById("btn-copy-all").addEventListener("click", async () => {
+        document.getElementById("btn-copy-all").addEventListener("click", () => {
             if (!selectedAccountLogin) return;
             const acc = ACCOUNTS.find(a => a.login === selectedAccountLogin) || RUBIES_ACCOUNTS.find(a => a.login === selectedAccountLogin);
             const st = getAccountStatus(selectedAccountLogin);
@@ -7235,15 +7021,9 @@ ivan13000;d1f2y3z4
             const text = buildTxtForAccount(acc, st);
             copyToClipboard(text);
         });
-        document.getElementById("btn-delete").addEventListener("click", async () => {
+        document.getElementById("btn-delete").addEventListener("click", () => {
             if (!selectedAccountLogin) return;
-            const ok = await showConfirmModal({
-                title: "Удалить аккаунт?",
-                message: `Аккаунт «${selectedAccountLogin}» будет удалён из библиотеки.`,
-                confirmText: "Удалить",
-                danger: true
-            });
-            if (!ok) return;
+            if (!confirm(`Delete "${selectedAccountLogin}"?`)) return;
             ACCOUNTS = ACCOUNTS.filter(a => a.login !== selectedAccountLogin);
             saveAccounts();
             selectedAccountLogin = null;
@@ -7261,7 +7041,6 @@ ivan13000;d1f2y3z4
         document.getElementById("tc-detail-modal")?.setAttribute("data-theme", CONFIG.THEME);
         document.getElementById("tc-rubies-add-modal")?.setAttribute("data-theme", CONFIG.THEME);
         document.getElementById("tc-assets-modal")?.setAttribute("data-theme", CONFIG.THEME);
-        document.getElementById("tc-confirm-modal")?.setAttribute("data-theme", CONFIG.THEME);
         document.querySelector(".tc-toast-stack")?.setAttribute("data-theme", CONFIG.THEME);
         if (currentTab === "settings") renderSettings();
     }
@@ -7611,29 +7390,17 @@ ivan13000;d1f2y3z4
                     showToast("Не удалось распознать аккаунты", "warning");
                 }
             });
-            document.getElementById("fv-btn-clear")?.addEventListener("click", async () => {
+            document.getElementById("fv-btn-clear")?.addEventListener("click", () => {
                 if (!FAST_VALID_ACCOUNTS.length) return showToast("База FastValid уже пуста", "info");
-                const ok = await showConfirmModal({
-                    title: "Очистить FastValid?",
-                    message: `Будет удалено аккаунтов: ${FAST_VALID_ACCOUNTS.length}.\nChecker и Rubies не затронутся.`,
-                    confirmText: "Очистить",
-                    danger: true
-                });
-                if (!ok) return;
+                if (!confirm(`Очистить базу FastValid (${FAST_VALID_ACCOUNTS.length} акк.)?\nChecker и Rubies не затронутся.`)) return;
                 const n = FAST_VALID_ACCOUNTS.length;
                 clearFastValidAccounts();
                 showToast(`FastValid очищена: ${n}`, "success");
                 renderChecker();
                 updateUI();
             });
-            document.getElementById("fv-btn-reset-st")?.addEventListener("click", async () => {
-                const ok = await showConfirmModal({
-                    title: "Сбросить статусы FastValid?",
-                    message: "Статусы и очередь FastValid будут очищены. Checker и Rubies не затронутся.",
-                    confirmText: "Сбросить",
-                    danger: true
-                });
-                if (!ok) return;
+            document.getElementById("fv-btn-reset-st")?.addEventListener("click", () => {
+                if (!confirm("Сбросить статусы только FastValid?")) return;
                 clearFastValidStatuses();
                 clearFastValidQueue();
                 shuffledAccounts = [];
@@ -7644,7 +7411,7 @@ ivan13000;d1f2y3z4
             });
         }
 
-        document.getElementById("btn-start").addEventListener("click", async () => {
+        document.getElementById("btn-start").addEventListener("click", () => {
             if (isRunning) return;
             setRunningState(true);
             isPaused = false;
@@ -7653,23 +7420,17 @@ ivan13000;d1f2y3z4
             startChecking();
             updateUI();
         });
-        document.getElementById("btn-stop").addEventListener("click", async () => {
+        document.getElementById("btn-stop").addEventListener("click", () => {
             setRunningState(false); isPaused = false; showToast("Stopped", "info"); updateUI();
         });
-        document.getElementById("btn-pause").addEventListener("click", async () => {
+        document.getElementById("btn-pause").addEventListener("click", () => {
             if (!isRunning) return;
             isPaused = !isPaused;
             showToast(isPaused ? "Paused" : "Resumed", "info");
             updateUI();
         });
-        document.getElementById("btn-reset").addEventListener("click", async () => {
-            const ok = await showConfirmModal({
-                title: "Сбросить все статусы?",
-                message: "Статусы проверки будут очищены. Сами аккаунты останутся.",
-                confirmText: "Сбросить",
-                danger: true
-            });
-            if (!ok) return;
+        document.getElementById("btn-reset").addEventListener("click", () => {
+            if (!confirm("Reset all statuses?")) return;
             if (MODE === "fastValid") {
                 clearFastValidStatuses();
                 clearFastValidQueue();
@@ -8042,10 +7803,10 @@ ivan13000;d1f2y3z4
             updateUI();
             startChecking();
         });
-        document.getElementById("rub-stop").addEventListener("click", async () => { setRunningState(false); isPaused = false; updateUI(); });
+        document.getElementById("rub-stop").addEventListener("click", () => { setRunningState(false); isPaused = false; updateUI(); });
 
         document.getElementById("rub-export-all").addEventListener("click", exportAllRubiesTxt);
-        document.getElementById("rub-add").addEventListener("click", async () => {
+        document.getElementById("rub-add").addEventListener("click", () => {
             const modal = document.getElementById("tc-rubies-add-modal");
             if (!modal) return;
             modal.setAttribute("data-theme", CONFIG.THEME);
@@ -8053,13 +7814,8 @@ ivan13000;d1f2y3z4
             const textarea = modal.querySelector("#rubies-add-textarea");
             setTimeout(() => { textarea?.focus(); }, 80);
         });
-        document.getElementById("rub-remove").addEventListener("click", async () => {
-            const input = await showPromptModal({
-                title: "Удалить из Daily Rubies",
-                message: "Введите логины через запятую, пробел или с новой строки.",
-                placeholder: "login1, login2, …",
-                confirmText: "Удалить"
-            });
+        document.getElementById("rub-remove").addEventListener("click", () => {
+            const input = prompt("Введите логины для удаления из Daily Rubies:");
             if (!input) return;
             const logins = input.split(/[\s,;]+/).map(s => s.trim()).filter(Boolean);
             let removed = 0;
@@ -8067,15 +7823,9 @@ ivan13000;d1f2y3z4
             showToast(`Removed: ${removed}`, "info");
             renderRubies();
         });
-        document.getElementById("rub-clear").addEventListener("click", async () => {
+        document.getElementById("rub-clear").addEventListener("click", () => {
             if (!RUBIES_ACCOUNTS.length) return showToast("Список Daily Rubies уже пуст", "info");
-            const ok = await showConfirmModal({
-                title: "Очистить Daily Rubies?",
-                message: "Будет удалено аккаунтов: " + RUBIES_ACCOUNTS.length + ".\nОсновная база Checker останется без изменений.",
-                confirmText: "Очистить",
-                danger: true
-            });
-            if (!ok) return;
+            if (!confirm(`Очистить весь список Daily Rubies?\n\nБудет удалено аккаунтов: ${RUBIES_ACCOUNTS.length}.\nОсновная база Checker останется без изменений.`)) return;
             const count = RUBIES_ACCOUNTS.length;
             clearRubiesAccounts();
             renderRubies();
@@ -8133,15 +7883,9 @@ ivan13000;d1f2y3z4
         `;
 
         document.getElementById("res-export").addEventListener("click", exportValidResultsTxt);
-        document.getElementById("res-clear").addEventListener("click", async () => {
+        document.getElementById("res-clear").addEventListener("click", () => {
             if (!list.length) return showToast("Хранилище уже пусто", "info");
-            const ok = await showConfirmModal({
-                title: "Очистить результаты?",
-                message: `Будут удалены все накопленные валидные результаты (${list.length}).`,
-                confirmText: "Очистить",
-                danger: true
-            });
-            if (!ok) return;
+            if (!confirm("Очистить ВСЕ накопленные валидные результаты (" + list.length + ")?")) return;
             clearValidResults();
             renderResults();
             showToast("Результаты очищены", "success");
@@ -8184,16 +7928,10 @@ ivan13000;d1f2y3z4
             }).join("");
 
             listEl.querySelectorAll(".res-del").forEach(btn => {
-                btn.addEventListener("click", async e => {
+                btn.addEventListener("click", e => {
                     e.stopPropagation();
                     const login = btn.dataset.login;
-                    const ok = await showConfirmModal({
-                        title: "Удалить результат?",
-                        message: `Результат «${login}» будет удалён из хранилища.`,
-                        confirmText: "Удалить",
-                        danger: true
-                    });
-                    if (!ok) return;
+                    if (!confirm("Удалить результат «" + login + "»?")) return;
                     removeValidResult(login);
                     renderResults();
                 });
@@ -8366,15 +8104,9 @@ ivan13000;d1f2y3z4
             showToast("Экспортировано: " + data.length, "success");
         });
 
-        document.getElementById("twofa-clear").addEventListener("click", async () => {
+        document.getElementById("twofa-clear").addEventListener("click", () => {
             if (!list.length) return showToast("Список уже пуст", "info");
-            const ok = await showConfirmModal({
-                title: "Удалить все 2FA?",
-                message: `Будут удалены все записи 2FA (${list.length}). Секреты из GM storage пропадут.`,
-                confirmText: "Удалить всё",
-                danger: true
-            });
-            if (!ok) return;
+            if (!confirm("Удалить ВСЕ записи 2FA (" + list.length + ")?")) return;
             clear2FAAccounts();
             render2FA();
             showToast("2FA-хранилище очищено", "success");
@@ -8428,16 +8160,10 @@ ivan13000;d1f2y3z4
                 });
             });
             listEl.querySelectorAll(".twofa-del").forEach(btn => {
-                btn.addEventListener("click", async e => {
+                btn.addEventListener("click", e => {
                     e.stopPropagation();
                     const login = btn.dataset.login;
-                    const ok = await showConfirmModal({
-                        title: "Удалить 2FA?",
-                        message: `Запись «${login}» и её секрет будут удалены.`,
-                        confirmText: "Удалить",
-                        danger: true
-                    });
-                    if (!ok) return;
+                    if (!confirm("Удалить «" + login + "»?")) return;
                     remove2FAAccount(login);
                     render2FA();
                 });
@@ -8572,14 +8298,8 @@ ivan13000;d1f2y3z4
             accountsSearchQuery = e.target.value;
             renderFullAccountList();
         });
-        document.getElementById("btn-clear-base").addEventListener("click", async () => {
-            const ok = await showConfirmModal({
-                title: "Очистить библиотеку?",
-                message: "Все аккаунты будут удалены из библиотеки Checker.",
-                confirmText: "Очистить",
-                danger: true
-            });
-            if (!ok) return;
+        document.getElementById("btn-clear-base").addEventListener("click", () => {
+            if (!confirm("Clear the entire library?")) return;
             ACCOUNTS = [];
             saveAccounts();
             shuffledAccounts = [];
@@ -8917,7 +8637,6 @@ ivan13000;d1f2y3z4
             document.getElementById("tc-detail-modal")?.setAttribute("data-theme", "dark");
             document.getElementById("tc-rubies-add-modal")?.setAttribute("data-theme", "dark");
             document.getElementById("tc-assets-modal")?.setAttribute("data-theme", "dark");
-            document.getElementById("tc-confirm-modal")?.setAttribute("data-theme", "dark");
             document.querySelector(".tc-toast-stack")?.setAttribute("data-theme", "dark");
             renderSettings();
         });
@@ -8927,7 +8646,6 @@ ivan13000;d1f2y3z4
             document.getElementById("tc-detail-modal")?.setAttribute("data-theme", "light");
             document.getElementById("tc-rubies-add-modal")?.setAttribute("data-theme", "light");
             document.getElementById("tc-assets-modal")?.setAttribute("data-theme", "light");
-            document.getElementById("tc-confirm-modal")?.setAttribute("data-theme", "light");
             document.querySelector(".tc-toast-stack")?.setAttribute("data-theme", "light");
             renderSettings();
         });
@@ -8980,7 +8698,7 @@ ivan13000;d1f2y3z4
     }
 });
 
-        document.getElementById("btn-wipe-all").addEventListener("click", async () => {
+        document.getElementById("btn-wipe-all").addEventListener("click", () => {
             const msg =
                 "Сброс баз аккаунтов\n\n" +
                 "Будет удалено:\n" +
@@ -8990,35 +8708,15 @@ ivan13000;d1f2y3z4
                 "• статусы и очередь сбора\n\n" +
                 "Настройки скрипта (Discord, theme, interval…) ОСТАНУТСЯ.\n\n" +
                 "Продолжить?";
-            const ok1 = await showConfirmModal({
-                title: "Полная очистка баз?",
-                message: msg,
-                confirmText: "Продолжить",
-                danger: true,
-                kicker: "Опасная зона"
-            });
-            if (!ok1) return;
-            const ok2 = await showConfirmModal({
-                title: "Точно удалить?",
-                message: "Базы будут очищены безвозвратно. Настройки скрипта останутся.",
-                confirmText: "Да, очистить",
-                danger: true,
-                kicker: "Последнее подтверждение"
-            });
-            if (!ok2) return;
+            if (!confirm(msg)) return;
+            if (!confirm("Точно? Базы будут очищены.")) return;
             const n = wipeAllScriptStorage({ keepSettings: true });
             showToast(`Базы сброшены. Ключей: ${n}. Reload…`, "success");
             setTimeout(() => location.reload(), 600);
         });
 
-        document.getElementById("btn-wipe-hashes-only").addEventListener("click", async () => {
-            const ok = await showConfirmModal({
-                title: "Очистить entrance hash?",
-                message: "Hash будет удалён у всех аккаунтов (Checker + Rubies + архив).",
-                confirmText: "Очистить",
-                danger: true
-            });
-            if (!ok) return;
+        document.getElementById("btn-wipe-hashes-only").addEventListener("click", () => {
+            if (!confirm("Очистить entrance hash у ВСЕХ аккаунтов (Checker + Rubies + архив)?")) return;
             let n = 0;
             for (const a of RUBIES_ACCOUNTS) {
                 if (a.entranceHash) { a.entranceHash = ""; n++; }
@@ -9563,7 +9261,7 @@ ivan13000;d1f2y3z4
             isRunning = true;
             setTimeout(() => { startChecking(); updateUI(); }, 1800);
         }
-        console.log("◆ Tanki Checker + Rubies v8.5.1 started | Mode:", MODE);
+        console.log("◆ Tanki Checker + Rubies v1.0.1 started | Mode:", MODE);
     }
 
     if (document.readyState === "complete") init();
