@@ -10,6 +10,22 @@ https://raw.githubusercontent.com/yuuairline/yuuline-checker/main/tanki-checker.
 
 ## Install
 
+### Loader (recommended for Tampermonkey)
+
+Install the **short loader** (not the full script) in Tampermonkey:
+
+https://raw.githubusercontent.com/yuuairline/yuuline-checker/main/tanki-checker-loader.user.js
+
+The loader downloads `tanki-checker.user.js` from GitHub, caches it in GM storage, and runs it.  
+Full source stays on GitHub; TM only stores the small loader.
+
+| File | Role |
+|------|------|
+| `tanki-checker-loader.user.js` | Install this in Tampermonkey |
+| `tanki-checker.user.js` | Full source on GitHub (fetched by loader) |
+
+
+
 1. Install **Tampermonkey** (Chrome / Firefox / Edge).
 2. Open the install link above — TM will offer to add the script.
 3. Confirm installation.
