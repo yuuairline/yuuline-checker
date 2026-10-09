@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tanki Online — Checker prod. by yuuairline
 // @namespace    http://tampermonkey.net/
-// @version      1.0.1
+// @version      1.0.2
 // @description  Checker + Daily Rubies + FastValid + auto 2FA (loader from GitHub)
 // @author       yuuairline
 // @match        https://*.tankionline.com/play/*
