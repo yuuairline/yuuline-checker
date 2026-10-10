@@ -7,6 +7,7 @@
 // @grant        GM_getValue
 // @grant        GM_xmlhttpRequest
 // @connect      api.github.com
+// @connect      *
 // @connect      raw.githubusercontent.com
 // @run-at       document-end
 // ==/UserScript==
