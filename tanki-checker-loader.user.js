@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tanki Checker Loader
 // @namespace    http://tampermonkey.net/
-// @version      1.0.2
+// @version      1.0.3
 // @match        https://*.tankionline.com/play/*
 // @grant        GM_setValue
 // @grant        GM_getValue
