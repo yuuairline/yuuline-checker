@@ -2462,19 +2462,65 @@
             document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", code: "Escape", keyCode: 27, which: 27, bubbles: true }));
             await sleep(120);
         }
+        await closeDialogButtonsOnly();
+    }
+
+    /** Закрыть только диалоги/крестики БЕЗ Escape — Escape выкидывает из МИССИЙ в лобби. */
+    async function closeDialogButtonsOnly() {
         const selectors = [
             ".ConverterDialogComponentStyle-closeButton",
             "[class*='DialogComponentStyle-closeButton']",
             "[class*='Dialog'][class*='CloseButton']",
             "[class*='ModalComponentStyle-closeButton']",
-            ".IconStyle-iconClose"
+            ".IconStyle-iconClose",
+            "[class*='closeButton']",
+            "[class*='CloseButton']"
         ];
         for (const sel of selectors) {
             for (const el of document.querySelectorAll(sel)) {
-                if (el.offsetParent !== null) { robustClick(el); await sleep(150); }
+                if (!el || !el.isConnected) continue;
+                if (el.offsetParent === null) continue;
+                // Не кликать по кнопке выхода из раздела (лобби)
+                if (el.closest && el.closest(".BreadcrumbsComponentStyle-exitGameButton, [class*='exitGameButton']")) continue;
+                robustClick(el);
+                await sleep(120);
             }
         }
-        await sleep(300);
+        await sleep(150);
+    }
+
+    function isInMissionsSection() {
+        // Хлебные крошки / заголовок раздела
+        const section = (typeof getCurrentSectionName === "function" ? getCurrentSectionName() : null) || "";
+        if (/миссию|миссии|mission/i.test(section)) return true;
+
+        // Пункты меню миссий (Обычные / Особые / …)
+        if (document.querySelector(".MenuComponentStyle-mainMenuItem, [class*='MenuComponentStyle-mainMenuItem']")) {
+            return true;
+        }
+        // Карточки категорий миссий
+        if (document.querySelector(".ScrollingCardsComponentStyle-scrollCard, [class*='ScrollingCardsComponentStyle-scrollCard']")) {
+            return true;
+        }
+        // Список квестов
+        if (document.querySelector(
+            ".MainQuestComponentStyle-cardRewardCompleted, [class*='MainQuestComponentStyle'], .TableMainQuestComponentStyle-cardRewardCompletedTable"
+        )) {
+            return true;
+        }
+        return false;
+    }
+
+    async function ensureInMissionsSection(timeoutMs = 12000) {
+        if (isInMissionsSection()) return true;
+        console.log("[Daily Rubies] 📋 Не в миссиях — открываем МИССИИ");
+        const ok = await openMissionsTab();
+        const start = Date.now();
+        while (Date.now() - start < timeoutMs) {
+            if (isInMissionsSection()) return true;
+            await sleep(250);
+        }
+        return isInMissionsSection() || !!ok;
     }
     async function ensureInLobby(maxAttempts = 6) {
         for (let i = 0; i < maxAttempts; i++) {
@@ -7293,12 +7339,24 @@ async function testDiscordNotification() {
         let cardDays = null;
         const start = Date.now();
 
-        // Закрыть модалки после «Забрать всё» у бонуса за вход
-        try { await closeAnyModal(); } catch (_) {}
-        await sleep(200);
+        // Без Escape — иначе вылетим в лобби
+        try { await closeDialogButtonsOnly(); } catch (_) {}
+        await sleep(150);
 
-        while (Date.now() - start < 16000) {
-            // Уже внутри — только если видны целевые миссии
+        // Критично: «Особые» только из раздела МИССИИ
+        if (!isInMissionsSection()) {
+            console.log("[Daily Rubies] 📋 openSpecial: не в миссиях → МИССИИ сначала");
+            await ensureInMissionsSection(12000);
+            await sleep(400);
+        }
+
+        while (Date.now() - start < 18000) {
+            if (!isInMissionsSection()) {
+                console.log("[Daily Rubies] 📋 Потеряли миссии — открываем снова");
+                await ensureInMissionsSection(8000);
+                await sleep(300);
+            }
+
             if (isSpecialMissionsContentVisible()) {
                 console.log("[Daily Rubies] ⭐ Раздел Особые уже открыт (видны Ежедневные Рубины / Бонус за премиум)");
                 return { ok: true, via: "already", cardDays };
@@ -7306,7 +7364,10 @@ async function testDiscordNotification() {
 
             const res = await clickSpecialEntry();
             if (!res.ok) {
-                // Меню/карточки ещё нет — подождать
+                // Нет меню/карточки — возможно ещё грузится или мы не в миссиях
+                if (!isInMissionsSection()) {
+                    await ensureInMissionsSection(6000);
+                }
                 await sleep(400);
                 continue;
             }
@@ -7322,7 +7383,6 @@ async function testDiscordNotification() {
                         (cardDays != null ? `, дней на карте: ${cardDays}` : ""));
                     return { ok: true, via: lastVia, cardDays };
                 }
-                // Иногда после карточки появляется меню — дожимаем пункт
                 const menuAgain = findSpecialMissionsMenuItem();
                 if (menuAgain) {
                     const cls = String(menuAgain.className || "");
@@ -7335,7 +7395,7 @@ async function testDiscordNotification() {
                 await sleep(300);
             }
             console.log(`[Daily Rubies] ⚠️ После клика (${lastVia}) целевые миссии не видны — повтор`);
-            try { await closeAnyModal(); } catch (_) {}
+            try { await closeDialogButtonsOnly(); } catch (_) {}
             await sleep(300);
         }
 
@@ -7682,19 +7742,17 @@ async function testDiscordNotification() {
 
             await handleLoginBonus();
             await sleep(400);
-            try { await closeAnyModal(); } catch (_) {}
+            // Только крестики диалога — НЕ Escape (Escape = выход в лобби)
+            try { await closeDialogButtonsOnly(); } catch (_) {}
             await sleep(300);
-            // После сбора бонуса за вход UI может остаться на карточке — убеждаемся, что мы в миссиях
-            try {
-                const stillNeedMissions = !document.querySelector(
-                    ".MenuComponentStyle-mainMenuItem, [class*='MenuComponentStyle-mainMenuItem'], .ScrollingCardsComponentStyle-scrollCard"
-                );
-                if (stillNeedMissions) {
-                    console.log("[Daily Rubies] 📋 Повторно открываем МИССИИ после бонуса");
-                    await openMissionsTab();
-                    await sleep(500);
-                }
-            } catch (_) {}
+
+            if (!isInMissionsSection()) {
+                console.log("[Daily Rubies] 📋 После бонуса не в миссиях — возвращаемся в МИССИИ");
+                await ensureInMissionsSection(12000);
+                await sleep(400);
+            } else {
+                console.log("[Daily Rubies] 📋 Остаёмся в миссиях после бонуса");
+            }
 
             console.log(`[Daily Rubies] ⭐ Открываем Особые`);
             const specialRes = await openSpecialMissions();
