@@ -7758,39 +7758,23 @@ async function testDiscordNotification() {
             const specialRes = await openSpecialMissions();
             const openedSpecial = !!(specialRes && specialRes.ok);
             let noDailyRubies = false;
-            // Если на карточке «Особые» виден таймер (4д. …) — сохраняем дни даже до сбора
-            if (specialRes && specialRes.cardDays != null && Number(specialRes.cardDays) >= 0) {
-                prev.rubiesRemainingDays = Number(specialRes.cardDays);
-                if (!prev.rubiesTotalDays) prev.rubiesTotalDays = 10;
-                if (prev.rubiesCompletedDays == null && prev.rubiesTotalDays) {
-                    prev.rubiesCompletedDays = Math.max(0, prev.rubiesTotalDays - prev.rubiesRemainingDays);
-                }
-                prev.rubiesNoDaily = false;
-                if (prev.rubiesRemainingDays <= 0) {
-                    prev.rubiesSubscriptionFinished = true;
-                } else {
-                    prev.rubiesSubscriptionFinished = false;
-                    prev.rubiesEnabled = true;
-                    prev.rubiesEligible = true;
-                }
-                console.log(`[Daily Rubies] ⏱ Дни с карточки Особые: ${prev.rubiesRemainingDays}`);
-            }
+            // ВАЖНО: таймер на карточке категории «Особые» (4д. 09ч.) — это НЕ дни подписки
+            // на ежедневные рубины. Дни берём ТОЛЬКО из прогресса миссии «Ежедневные Рубины».
+
             if (openedSpecial) {
                 await tryCollectMission("Бонус за премиум");
                 await sleep(600);
                 const rubyResult = await tryCollectMission("Ежедневные Рубины");
                 if (rubyResult.found && rubyResult.progress) {
-                    const cd = rubyResult.progress.completed;
-                    const td = rubyResult.progress.total;
-                    const rem = Math.max(0, td - cd);
-                    console.log(`[Daily Rubies] 💎 Прогресс: ${cd}/${td}`);
-                    console.log(`[Daily Rubies] 💎 Осталось: ${rem} дней`);
+                    const cd = Number(rubyResult.progress.completed) || 0;
+                    const td = Number(rubyResult.progress.total) || 0;
+                    const rem = td > 0 ? Math.max(0, td - cd) : 0;
+                    console.log(`[Daily Rubies] 💎 Прогресс миссии «Ежедневные Рубины»: ${cd}/${td} → осталось ${rem}д`);
                     prev.rubiesCompletedDays = cd;
-                    prev.rubiesTotalDays = td;
+                    prev.rubiesTotalDays = td || prev.rubiesTotalDays || null;
                     prev.rubiesRemainingDays = rem;
-                    // Есть прогресс — это не «нет дейликов»
                     prev.rubiesNoDaily = false;
-                    if (rem <= 0) {
+                    if (td > 0 && rem <= 0) {
                         prev.rubiesSubscriptionFinished = true;
                         prev.rubiesStatus = "Подписка завершена";
                         prev.rubiesEnabled = false;
@@ -7801,33 +7785,32 @@ async function testDiscordNotification() {
                         prev.rubiesEnabled = true;
                         prev.rubiesEligible = true;
                     }
-                } else if (!rubyResult.found) {
-                    const knownRem = getRubiesRemainingDays(prev);
-                    if (knownRem != null && knownRem > 0) {
-                        // Раньше были дни — не помечаем «нет дейликов», оставляем на повтор
-                        console.log(`[Daily Rubies] ⚠️ Миссия не найдена, но в статусе ещё ${knownRem}d — не архивируем, статус Ошибка`);
-                        prev.rubiesNoDaily = false;
-                        prev.rubiesStatus = "Ошибка";
-                        prev.rubiesError = "Миссия «Ежедневные Рубины» не найдена при наличии дней";
-                    } else {
-                        noDailyRubies = true;
-                        console.log(`[Daily Rubies] ⏹ Нет «Ежедневные Рубины» на ${login} — больше не заходим`);
-                    }
+                } else if (rubyResult.found && !rubyResult.progress) {
+                    // Миссия есть, прогресс не распарсился — не выдумываем дни, не архивируем
+                    console.log(`[Daily Rubies] ⚠️ «Ежедневные Рубины» найдена, но прогресс не прочитан`);
+                    prev.rubiesNoDaily = false;
+                    prev.rubiesStatus = "Ошибка";
+                    prev.rubiesError = "Прогресс «Ежедневные Рубины» не прочитан";
+                } else {
+                    // Раздел Особые открыт, миссии нет → подписки нет (устаревшие 4d из storage сбрасываем)
+                    console.log(`[Daily Rubies] ⏹ Нет миссии «Ежедневные Рубины» на ${login} — подписки нет, в архив`);
+                    noDailyRubies = true;
+                    prev.rubiesRemainingDays = null;
+                    prev.rubiesCompletedDays = null;
+                    prev.rubiesTotalDays = null;
+                    prev.rubiesNoDaily = true;
+                    prev.rubiesSubscriptionFinished = true;
+                    prev.rubiesStatus = "Нет дейликов";
+                    prev.rubiesEnabled = false;
+                    prev.rubiesEligible = false;
+                    prev.rubiesError = null;
                 }
             } else {
-                const knownRem = getRubiesRemainingDays(prev);
-                if (knownRem != null && knownRem > 0) {
-                    console.log(`[Daily Rubies] ⚠️ «Особые» не открылись, но осталось ${knownRem}d — Ошибка, повтор`);
-                    prev.rubiesNoDaily = false;
-                    prev.rubiesStatus = "Ошибка";
-                    prev.rubiesError = "Вкладка «Особые» не открылась";
-                } else {
-                    // Не архивируем сразу: мог просто не прогрузиться UI — помечаем ошибку
-                    console.log(`[Daily Rubies] ⚠️ «Особые» не открылись — статус Ошибка (не «нет дейликов» без проверки)`);
-                    prev.rubiesNoDaily = false;
-                    prev.rubiesStatus = "Ошибка";
-                    prev.rubiesError = "Не найдена вкладка/карточка «Особые»";
-                }
+                // UI не открылся — ошибка на повтор, дни из storage НЕ трогаем как подтверждение подписки
+                console.log(`[Daily Rubies] ⚠️ «Особые» не открылись — статус Ошибка`);
+                prev.rubiesNoDaily = false;
+                prev.rubiesStatus = "Ошибка";
+                prev.rubiesError = "Не найдена вкладка/карточка «Особые»";
             }
 
             if (noDailyRubies) {
