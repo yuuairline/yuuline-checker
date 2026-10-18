@@ -786,6 +786,44 @@
             }
         }
 
+        // Формат Login: / pass: (англ., построчно)
+        {
+            let curLogin = null;
+            let curEmail = null;
+            let hits = 0;
+            for (const rawLine of normalizedText.split(/\n/)) {
+                const line = rawLine.trim();
+                if (!line) continue;
+                let m = line.match(/^(?:Login|login|Логин|логин)\s*:\s*(.+)$/i);
+                if (m) {
+                    curLogin = m[1].trim().split(/\s{2,}/)[0].trim();
+                    continue;
+                }
+                m = line.match(/^(?:pass|Pass|password|Password|Пароль|пароль)\s*:\s*(.+)$/i);
+                if (m && curLogin) {
+                    let pw = m[1].trim();
+                    if (pw && pw !== "******" && pw.toLowerCase() !== "пусто") {
+                        addAccount(curLogin, pw, { email: curEmail });
+                        hits++;
+                    }
+                    curLogin = null;
+                    curEmail = null;
+                    continue;
+                }
+                m = line.match(/^(?:Email|email|Почта|почта)\s*:\s*(.+)$/i);
+                if (m) {
+                    const e = m[1].trim();
+                    if (e && e.includes("@") && !/^пусто$/i.test(e)) curEmail = e;
+                    continue;
+                }
+                m = line.match(/^([a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,})\s*$/);
+                if (m && !curLogin) {
+                    curEmail = m[1];
+                }
+            }
+            if (hits > 0) console.log("[import] Login/pass формат: распознано " + hits + " акк.");
+        }
+
         let blocks = normalizedText
             .split(/^\s*(?:[-=_*#]+|--[A-Za-z0-9_-]+--)\s*$/m)
             .map(b => b.trim())
