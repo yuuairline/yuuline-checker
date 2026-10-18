@@ -6888,13 +6888,56 @@ async function testDiscordNotification() {
         "Подписка завершена"
     ];
 
+    function getRubiesRemainingDays(st) {
+        st = st || {};
+        if (st.rubiesRemainingDays != null && st.rubiesRemainingDays !== "") {
+            const n = Number(st.rubiesRemainingDays);
+            if (Number.isFinite(n)) return n;
+        }
+        const cd = st.rubiesCompletedDays != null ? Number(st.rubiesCompletedDays) : null;
+        const td = st.rubiesTotalDays != null ? Number(st.rubiesTotalDays) : null;
+        if (Number.isFinite(cd) && Number.isFinite(td) && td > 0) return Math.max(0, td - cd);
+        return null;
+    }
+
     function getRubiesDisplayStatus(st) {
         st = st || {};
-        if (st.rubiesSubscriptionFinished) return "Подписка завершена";
-        if (st.rubiesNoDaily) return "Нет дейликов";
+        const rem = getRubiesRemainingDays(st);
+
+        // Приоритет: реальные дни подписки важнее старых флагов/статусов
+        if (rem != null && rem > 0) {
+            if (st.rubiesEnabled === false && st.rubiesStatus === "Отключён") return "Отключён";
+            if (st.rubiesStatus === "Собрано" || isRubiesCollectedToday(st)) return "Собрано";
+            if (st.rubiesStatus === "Ошибка") return "Ошибка";
+            if (st.rubiesStatus === "2FA" || st.twofa) return "2FA";
+            if (st.rubiesStatus === "Заблокирован" || st.blocked) return "Заблокирован";
+            if (st.rubiesStatus === "Не собрано") return "Не собрано";
+            // Старый «Нет дейликов» при наличии дней — игнорируем
+            if (st.rubiesStatus && st.rubiesStatus !== "Нет дейликов" && st.rubiesStatus !== "Подписка завершена") {
+                return String(st.rubiesStatus);
+            }
+            return "Не собрано";
+        }
+
+        if (rem === 0 || st.rubiesSubscriptionFinished) return "Подписка завершена";
+
+        if (st.rubiesNoDaily && rem == null) return "Нет дейликов";
+        if (st.rubiesStatus === "Нет дейликов" && rem == null) return "Нет дейликов";
+
         if (st.rubiesStatus) return String(st.rubiesStatus);
         if (isRubiesCollectedToday(st)) return "Собрано";
         return "Не собрано";
+    }
+
+    function shouldArchiveRubiesByDays(st) {
+        st = st || {};
+        const rem = getRubiesRemainingDays(st);
+        if (rem === 0) return { archive: true, reason: "0_days" };
+        if ((st.rubiesNoDaily || st.rubiesStatus === "Нет дейликов") && rem == null) {
+            return { archive: true, reason: "no_dailies" };
+        }
+        if (st.rubiesSubscriptionFinished) return { archive: true, reason: "subscription_finished" };
+        return { archive: false, reason: null };
     }
 
     function accountMatchesRubiesStatusFilter(acc, st, options = {}) {
@@ -6902,16 +6945,27 @@ async function testDiscordNotification() {
         const includeCollected = !!options.includeCollected;
         const includeFailed = !!options.includeFailed;
         const ds = getRubiesDisplayStatus(st);
+        const rem = getRubiesRemainingDays(st);
 
-        if (CONFIG.RUBIES_SKIP_FINISHED && (st.rubiesSubscriptionFinished || ds === "Подписка завершена")) return false;
-
-        if (ds === "Не собрано") return true;
-
+        // Завершённые / без дней — не в очередь
+        if (CONFIG.RUBIES_SKIP_FINISHED && (st.rubiesSubscriptionFinished || ds === "Подписка завершена" || rem === 0)) return false;
+        if (ds === "Нет дейликов" && rem == null) return false;
         if (st.rubiesEnabled === false || ds === "Отключён") return false;
-        if (ds === "Нет дейликов") return false;
+
+        // Уже собрано сегодня — пропуск (пока не includeCollected)
+        if (!includeCollected && (ds === "Собрано" || st.rubiesStatus === "Собрано" || isRubiesCollectedToday(st))) return false;
+
+        // Есть дни или статус «не собрано» — в очередь
+        if (ds === "Не собрано") return true;
+        if (rem != null && rem > 0) {
+            // Ошибка / 2FA / прочее при наличии дней — только если includeFailed или ещё не terminal
+            if (ds === "Ошибка" || ds === "2FA" || ds === "Заблокирован") {
+                return !!includeFailed || !isRubiesTerminalFail(st);
+            }
+            return true;
+        }
+
         if (!includeFailed && isRubiesTerminalFail(st)) return false;
-        if (!includeCollected && (ds === "Собрано" || st.rubiesStatus === "Собрано")) return false;
-        if (!includeCollected && isRubiesCollectedToday(st)) return false;
         return true;
     }
 
@@ -7476,17 +7530,43 @@ async function testDiscordNotification() {
                     prev.rubiesCompletedDays = cd;
                     prev.rubiesTotalDays = td;
                     prev.rubiesRemainingDays = rem;
+                    // Есть прогресс — это не «нет дейликов»
+                    prev.rubiesNoDaily = false;
                     if (rem <= 0) {
                         prev.rubiesSubscriptionFinished = true;
-                        console.log(`[Daily Rubies] ⏹ Подписка завершена для ${login}`);
+                        prev.rubiesStatus = "Подписка завершена";
+                        prev.rubiesEnabled = false;
+                        prev.rubiesEligible = false;
+                        console.log(`[Daily Rubies] ⏹ Подписка завершена для ${login} (0 дней)`);
+                    } else {
+                        prev.rubiesSubscriptionFinished = false;
+                        prev.rubiesEnabled = true;
+                        prev.rubiesEligible = true;
                     }
                 } else if (!rubyResult.found) {
-                    noDailyRubies = true;
-                    console.log(`[Daily Rubies] ⏹ Нет «Ежедневные Рубины» на ${login} — больше не заходим`);
+                    const knownRem = getRubiesRemainingDays(prev);
+                    if (knownRem != null && knownRem > 0) {
+                        // Раньше были дни — не помечаем «нет дейликов», оставляем на повтор
+                        console.log(`[Daily Rubies] ⚠️ Миссия не найдена, но в статусе ещё ${knownRem}d — не архивируем, статус Ошибка`);
+                        prev.rubiesNoDaily = false;
+                        prev.rubiesStatus = "Ошибка";
+                        prev.rubiesError = "Миссия «Ежедневные Рубины» не найдена при наличии дней";
+                    } else {
+                        noDailyRubies = true;
+                        console.log(`[Daily Rubies] ⏹ Нет «Ежедневные Рубины» на ${login} — больше не заходим`);
+                    }
                 }
             } else {
-                noDailyRubies = true;
-                console.log(`[Daily Rubies] ⚠️ «Особые» не открылись / пусто — нет дейликов на ${login}`);
+                const knownRem = getRubiesRemainingDays(prev);
+                if (knownRem != null && knownRem > 0) {
+                    console.log(`[Daily Rubies] ⚠️ «Особые» не открылись, но осталось ${knownRem}d — Ошибка, повтор`);
+                    prev.rubiesNoDaily = false;
+                    prev.rubiesStatus = "Ошибка";
+                    prev.rubiesError = "Вкладка «Особые» не открылась";
+                } else {
+                    noDailyRubies = true;
+                    console.log(`[Daily Rubies] ⚠️ «Особые» не открылись / пусто — нет дейликов на ${login}`);
+                }
             }
 
             if (noDailyRubies) {
@@ -7495,6 +7575,8 @@ async function testDiscordNotification() {
                 prev.rubiesStatus = "Нет дейликов";
                 prev.rubiesEnabled = false;
                 prev.rubiesEligible = false;
+                // дней нет / неизвестны — в архив
+                prev.rubiesRemainingDays = prev.rubiesRemainingDays != null ? prev.rubiesRemainingDays : null;
             }
 
             const rubiesAfter = await waitForBalanceUpdate(rubiesBefore);
@@ -7507,6 +7589,37 @@ async function testDiscordNotification() {
             const ip = CONFIG.IP_CHECK_ENABLED ? await fetchCurrentIP() : null;
             const accInfo = ACCOUNTS.find(a => a.login === login) || {};
 
+            const remAfter = getRubiesRemainingDays(prev);
+            let finalStatus = "Собрано";
+            let finalNoDaily = false;
+            let finalFinished = false;
+            let finalEnabled = true;
+
+            if (prev.rubiesNoDaily && (remAfter == null || remAfter <= 0)) {
+                finalStatus = "Нет дейликов";
+                finalNoDaily = true;
+                finalFinished = true;
+                finalEnabled = false;
+            } else if (remAfter === 0 || prev.rubiesSubscriptionFinished) {
+                finalStatus = "Подписка завершена";
+                finalNoDaily = false;
+                finalFinished = true;
+                finalEnabled = false;
+            } else if (remAfter != null && remAfter > 0) {
+                // Есть дни — успех сбора
+                finalStatus = "Собрано";
+                finalNoDaily = false;
+                finalFinished = false;
+                finalEnabled = true;
+            } else if (prev.rubiesStatus === "Ошибка") {
+                finalStatus = "Ошибка";
+                finalNoDaily = false;
+                finalFinished = false;
+                finalEnabled = true;
+            } else {
+                finalStatus = "Собрано";
+            }
+
             const newStatus = {
                 ...prev,
                 done: true,
@@ -7518,20 +7631,24 @@ async function testDiscordNotification() {
                 rubies: rubiesAfter,
                 rubiesBeforeCollection: rubiesBefore,
                 rubiesAfterCollection: rubiesAfter,
-                rubiesEnabled: prev.rubiesNoDaily ? false : true,
-                rubiesEligible: prev.rubiesNoDaily ? false : true,
-                rubiesStatus: prev.rubiesNoDaily ? "Нет дейликов" : (prev.rubiesStatus === "Нет дейликов" ? "Нет дейликов" : "Собрано"),
-                rubiesNoDaily: !!prev.rubiesNoDaily,
-                lastRubiesCollection: prev.rubiesNoDaily ? (prev.lastRubiesCollection || null) : new Date().toISOString(),
+                rubiesEnabled: finalEnabled,
+                rubiesEligible: finalEnabled && !finalFinished,
+                rubiesStatus: finalStatus,
+                rubiesNoDaily: finalNoDaily,
+                rubiesSubscriptionFinished: finalFinished,
+                lastRubiesCollection: (finalNoDaily || finalStatus === "Ошибка")
+                    ? (prev.lastRubiesCollection || null)
+                    : new Date().toISOString(),
                 year: accInfo.year || prev.year,
                 bound: accInfo.bound ?? prev.bound,
                 proxyIp: ip || prev.proxyIp
             };
             setAccountStatus(login, newStatus);
 
-            if (newStatus.rubiesSubscriptionFinished || newStatus.rubiesNoDaily) {
+            const arch = shouldArchiveRubiesByDays(newStatus);
+            if (arch.archive || newStatus.rubiesSubscriptionFinished || newStatus.rubiesNoDaily) {
                 archiveRubiesAccount(login);
-                console.log(`[Daily Rubies] 🗄 ${login}: ${newStatus.rubiesNoDaily ? "нет дейликов" : "подписка завершена"} — в архив, больше не заходим`);
+                console.log(`[Daily Rubies] 🗄 ${login}: архив (${arch.reason || (newStatus.rubiesNoDaily ? "нет дейликов" : "подписка завершена")})`);
             }
 
             await notifyRubiesCollected({
@@ -7574,11 +7691,54 @@ async function testDiscordNotification() {
                 return { login, status: "next" };
             }
 
-            console.log(`[Daily Rubies] ✔ Все аккаунты обработаны`);
+            // Конец прохода: архивируем 0d / «нет дейликов» без дней, затем повтор по ошибкам и несобранным
+            try {
+                for (const a of [...RUBIES_ACCOUNTS]) {
+                    const st = getAccountStatus(a.login) || {};
+                    const arch = shouldArchiveRubiesByDays(st);
+                    if (arch.archive) {
+                        archiveRubiesAccount(a.login);
+                        console.log(`[Daily Rubies] 🗄 auto-archive ${a.login}: ${arch.reason}`);
+                    }
+                }
+            } catch (e) {
+                console.warn("[Daily Rubies] auto-archive pass error", e);
+            }
+
+            const retryList = getRubiesEligibleAccounts({ includeFailed: true });
+            // eligible уже исключает «Собрано» и завершённые; includeFailed тянет ошибки/2FA и т.п. с днями
+            if (retryList.length > 0 && isRunning) {
+                console.log(`[Daily Rubies] 🔁 Повторный проход: ${retryList.length} акк. (ошибки / не собрано, «Собрано» пропуск)`);
+                const queue2 = retryList.map(a => a.login);
+                saveRubiesRunQueue(queue2);
+                saveRubiesRunCursor(0);
+                shuffledAccounts = queue2.map(l => RUBIES_ACCOUNTS.find(a => a.login === l)).filter(Boolean);
+                currentIndex = 0;
+                setRunningState(true);
+                showToast(`Повтор: ${retryList.length} акк. без «Собрано»`, "info");
+                await sleep(400);
+                const next = shuffledAccounts[0];
+                if (next) {
+                    const nextIsPassword = accountNeedsPasswordLogin(next);
+                    if (next.entranceHash && !nextIsPassword) {
+                        setRubiesHashSwitchTarget(next);
+                        setEntranceHash(next.entranceHash);
+                    } else {
+                        clearRubiesHashSwitchTarget();
+                        clearGameSessionForPasswordLogin();
+                        GM_setValue("tanki_rubies_force_credentials_v83", next.login);
+                    }
+                }
+                await sleep(200);
+                location.reload();
+                return { login, status: "retry_pass" };
+            }
+
+            console.log(`[Daily Rubies] ✔ Все аккаунты обработаны (повтор не нужен)`);
             clearRubiesRunState();
             setRunningState(false);
             updateUI();
-            showToast("Все аккаунты обработаны", "success");
+            showToast("Все рубины собраны / очередь пуста", "success");
             GM_setValue("tanki_rubies_show_done_toast", "1");
             await sleep(500);
             location.reload();
