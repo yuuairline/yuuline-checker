@@ -7131,32 +7131,46 @@ async function testDiscordNotification() {
     }
 
     function findSpecialMissionsMenuItem() {
-        const selectors = [
-            ".MenuComponentStyle-mainMenuItem",
-            "[class*='MenuComponentStyle-mainMenuItem']",
-            ".MenuComponentStyle-menuItem",
-            "[class*='mainMenuItem']",
-            "li",
-            "div",
-            "span",
-            "button"
-        ];
-        for (const sel of selectors) {
-            for (const item of document.querySelectorAll(sel)) {
-                if (!item || !item.isConnected) continue;
-                const t = (item.textContent || "").replace(/\s+/g, " ").trim();
-                // Пункт меню: короткое имя «Особые», не карточка с длинным описанием
-                if (!/^Особые$/i.test(t) && !(t.length <= 24 && /^Особые\b/i.test(t))) continue;
-                const rect = item.getBoundingClientRect?.() || { width: 0, height: 0 };
-                if (rect.width < 2 || rect.height < 2) continue;
-                return item;
+        // Строго: пункт бокового/верхнего меню, не карточка и не заголовок внутри карточки
+        const preferred = document.querySelectorAll(
+            ".MenuComponentStyle-mainMenuItem, [class*='MenuComponentStyle-mainMenuItem']"
+        );
+        for (const item of preferred) {
+            if (!item || !item.isConnected) continue;
+            // Берём только прямой текст пункта, без вложенных длинных описаний
+            let t = "";
+            for (const node of item.childNodes) {
+                if (node.nodeType === 3) t += node.textContent || "";
             }
+            t = t.replace(/\s+/g, " ").trim() || (item.textContent || "").replace(/\s+/g, " ").trim();
+            // Пункт меню обычно короткий: «Особые»
+            if (!/^Особые$/i.test(t) && !(t.length <= 20 && t.toLowerCase() === "особые")) {
+                // Иногда textContent = «Особые» без лишнего
+                const full = (item.textContent || "").replace(/\s+/g, " ").trim();
+                if (full !== "Особые" && full.toLowerCase() !== "особые") continue;
+                t = full;
+            }
+            const rect = item.getBoundingClientRect?.() || { width: 0, height: 0 };
+            if (rect.width < 2 || rect.height < 2) continue;
+            // Не карточка scrollCard
+            if (item.closest(".ScrollingCardsComponentStyle-scrollCard, [class*='scrollCard']")) continue;
+            return item;
+        }
+
+        // Фоллбек по классу mainMenuItem с точным текстом
+        for (const item of document.querySelectorAll("[class*='MenuComponentStyle']")) {
+            if (!item || !item.isConnected) continue;
+            const full = (item.textContent || "").replace(/\s+/g, " ").trim();
+            if (full !== "Особые") continue;
+            if (item.closest(".ScrollingCardsComponentStyle-scrollCard, [class*='scrollCard']")) continue;
+            const rect = item.getBoundingClientRect?.() || { width: 0, height: 0 };
+            if (rect.width < 2 || rect.height < 2) continue;
+            return item;
         }
         return null;
     }
 
     function findSpecialMissionsCard() {
-        // Карточка на экране миссий: ScrollingCardsComponentStyle-scrollCard с h2 «Особые»
         let card = findCardByTitle("Особые");
         if (card) return card;
 
@@ -7168,20 +7182,17 @@ async function testDiscordNotification() {
                 ".ScrollingCardsComponentStyle-cardName, [class*='cardName'], h2, h3"
             );
             const name = (nameEl?.textContent || "").replace(/\s+/g, " ").trim();
-            if (!/Особые/i.test(name)) continue;
-            // Не путать с другими карточками: описание про «особые миссии» или таймер на карте
-            const desc = (c.querySelector(".ScrollingCardsComponentStyle-cardDescription, [class*='cardDescription']")?.textContent || "");
-            const hasTimer = !!c.querySelector("[id^='timer_'], [class*='timer'], span");
-            if (/Особые\s*миссии/i.test(desc) || /Особые/i.test(name) || hasTimer) {
-                return c;
-            }
+            // Имя карточки начинается с «Особые» (может быть «Особые3» из-за счётчика в textContent)
+            if (!/^Особые/i.test(name) && !/Особые/i.test(name)) continue;
+            // Отсекаем «Бонус за вход» и прочие
+            if (/Бонус\s*за\s*вход|Ежедневн|Обычн/i.test(name) && !/Особые/i.test(name)) continue;
+            return c;
         }
 
-        // Фоллбек: любой элемент с точным заголовком «Особые» внутри карточки
-        for (const h of document.querySelectorAll("h1, h2, h3, .ScrollingCardsComponentStyle-cardName")) {
+        for (const h of document.querySelectorAll("h1, h2, h3")) {
             const t = (h.textContent || "").replace(/\s+/g, " ").trim();
-            if (t === "Особые" || /^Особые\s*$/i.test(t)) {
-                const card = h.closest(".ScrollingCardsComponentStyle-scrollCard, [class*='scrollCard'], .cardImg") || h.parentElement;
+            if (t === "Особые") {
+                const card = h.closest(".ScrollingCardsComponentStyle-scrollCard, [class*='scrollCard'], .cardImg");
                 if (card) return card;
             }
         }
@@ -7191,7 +7202,6 @@ async function testDiscordNotification() {
     function parseSpecialCardTimerDays(card) {
         if (!card) return null;
         const text = (card.textContent || "").replace(/\s+/g, " ");
-        // «4д. 09ч. 09м.» / «4д 09ч» / «4 д.»
         const m = text.match(/(\d+)\s*д(?:н(?:ей|я|ь)?)?\.?/i);
         if (m) {
             const n = parseInt(m[1], 10);
@@ -7200,21 +7210,64 @@ async function testDiscordNotification() {
         return null;
     }
 
-    async function clickSpecialEntry() {
-        // 1) Пункт меню «Особые»
+    /** Реально ли открыт раздел особых миссий (не общий экран миссий). */
+    function isSpecialMissionsContentVisible() {
+        // Ищем конкретные миссии раздела «Особые»
+        const targets = ["ежедневные рубины", "бонус за премиум"];
+        for (const el of document.querySelectorAll(
+            ".MainQuestComponentStyle-nameMission, .MainQuestComponentStyle-name, " +
+            "[class*='nameMission'], [class*='MainQuestComponentStyle'], span, h3, h4, p"
+        )) {
+            const t = (el.textContent || "").replace(/\s+/g, " ").trim().toLowerCase();
+            if (!t || t.length > 80) continue;
+            for (const name of targets) {
+                if (t === name || t.includes(name)) return true;
+            }
+        }
+        // Активный пункт меню «Особые»
         const menu = findSpecialMissionsMenuItem();
         if (menu) {
-            if (menu.classList.contains("-activeMenu") || /active/i.test(menu.className || "")) {
-                console.log("[Daily Rubies] ⭐ Особые уже открыты (меню)");
+            const cls = String(menu.className || "");
+            if (/-activeMenu|activeMenu|isActive|selected/i.test(cls)) {
+                // И при этом нет карточек категорий (мы уже внутри списка миссий)
+                const categoryCards = document.querySelectorAll(".ScrollingCardsComponentStyle-scrollCard, [class*='scrollCard']");
+                // Если карточка «Особые» всё ещё крупно на экране — мы ещё не внутри
+                let specialCardVisible = false;
+                for (const c of categoryCards) {
+                    const n = (c.querySelector(".ScrollingCardsComponentStyle-cardName, h2")?.textContent || "").trim();
+                    if (/^Особые/i.test(n)) {
+                        const r = c.getBoundingClientRect?.();
+                        if (r && r.width > 40 && r.height > 40) specialCardVisible = true;
+                    }
+                }
+                if (!specialCardVisible) return true;
+            }
+        }
+        return false;
+    }
+
+    async function clickSpecialEntry() {
+        // 1) Пункт меню — приоритет (после бонуса за вход меню обычно уже видно)
+        const menu = findSpecialMissionsMenuItem();
+        if (menu) {
+            const cls = String(menu.className || "");
+            const alreadyActive = /-activeMenu|activeMenu|isActive|selected/i.test(cls);
+            if (alreadyActive && isSpecialMissionsContentVisible()) {
+                console.log("[Daily Rubies] ⭐ Особые уже активны в меню + контент виден");
                 return { ok: true, via: "menu-active", cardDays: null };
             }
-            console.log("[Daily Rubies] ⭐ Открываем Особые (пункт меню)");
+            console.log("[Daily Rubies] ⭐ Клик по пункту меню «Особые»", menu.className || "");
+            try { menu.scrollIntoView({ block: "center", inline: "center" }); } catch (_) {}
+            robustClick(menu);
+            try { menu.click(); } catch (_) {}
+            // Повтор через короткий delay — UI иногда глотает первый клик
+            await sleep(350);
             robustClick(menu);
             try { menu.click(); } catch (_) {}
             return { ok: true, via: "menu", cardDays: null };
         }
 
-        // 2) Карточка «Особые» на экране миссий
+        // 2) Карточка на экране категорий миссий
         const card = findSpecialMissionsCard();
         if (card) {
             const cardDays = parseSpecialCardTimerDays(card);
@@ -7222,46 +7275,17 @@ async function testDiscordNotification() {
                 card.querySelector(".ScrollingCardsComponentStyle-selectCard, [class*='selectCard']") ||
                 card.querySelector(".ScrollingCardsComponentStyle-cardName, [class*='cardName']") ||
                 card;
-            console.log("[Daily Rubies] ⭐ Открываем Особые (карточка)" + (cardDays != null ? `, таймер ~${cardDays}д` : ""));
+            console.log("[Daily Rubies] ⭐ Клик по карточке «Особые»" + (cardDays != null ? `, таймер ~${cardDays}д` : ""));
+            try { clickTarget.scrollIntoView({ block: "center", inline: "center" }); } catch (_) {}
             robustClick(clickTarget);
             try { clickTarget.click(); } catch (_) {}
-            await sleep(200);
-            // иногда нужен повторный клик по самой карточке
-            if (!document.querySelector(
-                ".MainQuestComponentStyle-cardRewardCompleted, .TableMainQuestComponentStyle-cardRewardCompletedTable, [class*='MainQuestComponentStyle']"
-            )) {
-                robustClick(card);
-                try { card.click(); } catch (_) {}
-            }
+            await sleep(300);
+            robustClick(card);
+            try { card.click(); } catch (_) {}
             return { ok: true, via: "card", cardDays };
         }
 
         return { ok: false, via: null, cardDays: null };
-    }
-
-    function countSpecialMissionNodes() {
-        const sels = [
-            ".MainQuestComponentStyle-cardRewardCompleted",
-            ".TableMainQuestComponentStyle-cardRewardCompletedTable",
-            "[class*='MainQuestComponentStyle-cardRewardCompleted']",
-            "[class*='TableMainQuestComponentStyle-cardRewardCompletedTable']",
-            "[class*='MainQuestComponentStyle-nameMission']",
-            "[class*='QuestComponent']"
-        ];
-        let n = 0;
-        for (const sel of sels) {
-            n += document.querySelectorAll(sel).length;
-        }
-        // текстовый фоллбек
-        if (!n) {
-            for (const el of document.querySelectorAll("span, h3, h4, div")) {
-                const t = (el.textContent || "").trim();
-                if (/^Ежедневные\s*Рубины$/i.test(t) || /^Бонус\s*за\s*премиум$/i.test(t)) {
-                    n++;
-                }
-            }
-        }
-        return n;
     }
 
     async function openSpecialMissions() {
@@ -7269,43 +7293,54 @@ async function testDiscordNotification() {
         let cardDays = null;
         const start = Date.now();
 
-        // Несколько попыток: меню или карточка могут появиться с задержкой после «МИССИИ»
-        while (Date.now() - start < 14000) {
-            // Уже внутри особых?
-            if (countSpecialMissionNodes() > 0) {
-                console.log(`[Daily Rubies] ⭐ Особые уже открыты (миссии на экране)`);
+        // Закрыть модалки после «Забрать всё» у бонуса за вход
+        try { await closeAnyModal(); } catch (_) {}
+        await sleep(200);
+
+        while (Date.now() - start < 16000) {
+            // Уже внутри — только если видны целевые миссии
+            if (isSpecialMissionsContentVisible()) {
+                console.log("[Daily Rubies] ⭐ Раздел Особые уже открыт (видны Ежедневные Рубины / Бонус за премиум)");
                 return { ok: true, via: "already", cardDays };
             }
 
             const res = await clickSpecialEntry();
-            if (res.ok) {
-                lastVia = res.via;
-                if (res.cardDays != null) cardDays = res.cardDays;
-                await sleep(randomDelay(700, 1100));
-
-                const deadline = Date.now() + 12000;
-                while (Date.now() < deadline) {
-                    const n = countSpecialMissionNodes();
-                    if (n > 0) {
-                        console.log(`[Daily Rubies] ⭐ Особые открыты через ${lastVia}: найдено узлов миссий ~${n}` +
-                            (cardDays != null ? `, дней на карте: ${cardDays}` : ""));
-                        return { ok: true, via: lastVia, cardDays };
-                    }
-                    // иногда после карточки появляется подменю
-                    const menuAgain = findSpecialMissionsMenuItem();
-                    if (menuAgain && !/active/i.test(menuAgain.className || "")) {
-                        robustClick(menuAgain);
-                    }
-                    await sleep(250);
-                }
-                // кликнули, но миссии не прогрузились — ещё одна попытка с другим путём
-                console.log(`[Daily Rubies] ⚠️ Клик по Особые (${lastVia}) без миссий — повтор`);
+            if (!res.ok) {
+                // Меню/карточки ещё нет — подождать
+                await sleep(400);
+                continue;
             }
+
+            lastVia = res.via;
+            if (res.cardDays != null) cardDays = res.cardDays;
+            await sleep(randomDelay(800, 1200));
+
+            const deadline = Date.now() + 10000;
+            while (Date.now() < deadline) {
+                if (isSpecialMissionsContentVisible()) {
+                    console.log(`[Daily Rubies] ⭐ Особые открыты через ${lastVia}` +
+                        (cardDays != null ? `, дней на карте: ${cardDays}` : ""));
+                    return { ok: true, via: lastVia, cardDays };
+                }
+                // Иногда после карточки появляется меню — дожимаем пункт
+                const menuAgain = findSpecialMissionsMenuItem();
+                if (menuAgain) {
+                    const cls = String(menuAgain.className || "");
+                    if (!/-activeMenu|activeMenu/i.test(cls)) {
+                        console.log("[Daily Rubies] ⭐ Доп. клик по меню «Особые»");
+                        robustClick(menuAgain);
+                        try { menuAgain.click(); } catch (_) {}
+                    }
+                }
+                await sleep(300);
+            }
+            console.log(`[Daily Rubies] ⚠️ После клика (${lastVia}) целевые миссии не видны — повтор`);
+            try { await closeAnyModal(); } catch (_) {}
             await sleep(300);
         }
 
-        console.log("[Daily Rubies] ⚠️ Вкладка/карточка «Особые» не найдена");
-        return { ok: false, via: null, cardDays };
+        console.log("[Daily Rubies] ⚠️ Не удалось открыть раздел «Особые»");
+        return { ok: false, via: lastVia, cardDays };
     }
 
     function analyzeMissionNode(node) {
@@ -7646,7 +7681,20 @@ async function testDiscordNotification() {
             }
 
             await handleLoginBonus();
-            await sleep(600);
+            await sleep(400);
+            try { await closeAnyModal(); } catch (_) {}
+            await sleep(300);
+            // После сбора бонуса за вход UI может остаться на карточке — убеждаемся, что мы в миссиях
+            try {
+                const stillNeedMissions = !document.querySelector(
+                    ".MenuComponentStyle-mainMenuItem, [class*='MenuComponentStyle-mainMenuItem'], .ScrollingCardsComponentStyle-scrollCard"
+                );
+                if (stillNeedMissions) {
+                    console.log("[Daily Rubies] 📋 Повторно открываем МИССИИ после бонуса");
+                    await openMissionsTab();
+                    await sleep(500);
+                }
+            } catch (_) {}
 
             console.log(`[Daily Rubies] ⭐ Открываем Особые`);
             const specialRes = await openSpecialMissions();
