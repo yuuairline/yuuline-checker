@@ -748,6 +748,44 @@
 
         const normalizedText = String(text || '').replace(/\r/g, '');
 
+        // Однострочный формат: «Логин: X Пароль: Y Почта: Z Пароль от почты: W»
+        // (весь аккаунт в одной строке — основной импорт из больших дампов)
+        {
+            const oneLineRe = /Логин\s*:\s*(.+?)\s+Пароль\s*:\s*(.+?)(?:\s+Почта\s*:\s*(.*?))?(?:\s+Пароль\s+от\s+почты\s*:\s*(.*))?$/i;
+            let oneLineHits = 0;
+            for (const rawLine of normalizedText.split(/\n/)) {
+                const line = rawLine.trim();
+                if (!line || !/Логин\s*:/i.test(line) || !/Пароль\s*:/i.test(line)) continue;
+                // Не считать многострочный блок, где на строке только «Логин: x»
+                if (!/\sПароль\s*:/i.test(line) && !/Пароль\s*:/.test(line)) continue;
+                let m = line.match(oneLineRe);
+                let login = null, password = null, email = null;
+                if (m) {
+                    login = (m[1] || "").trim();
+                    password = (m[2] || "").trim();
+                    email = (m[3] || "").trim() || null;
+                } else {
+                    const lm = line.match(/Логин\s*:\s*(.+?)(?=\s+Пароль\s*:)/i);
+                    const pm = line.match(/Пароль\s*:\s*(.+?)(?=\s+Почта\s*:|\s+Пароль\s+от\s+почты\s*:|$)/i);
+                    const em = line.match(/Почта\s*:\s*(.+?)(?=\s+Пароль\s+от\s+почты\s*:|$)/i);
+                    if (!lm || !pm) continue;
+                    login = (lm[1] || "").trim();
+                    password = (pm[1] || "").trim();
+                    email = em ? (em[1] || "").trim() : null;
+                }
+                if (!login || !password) continue;
+                // Несколько паролей через «;» — берём первый
+                if (password.includes(";")) password = password.split(";")[0].trim();
+                if (email && (!email.includes("@") || /^пароль/i.test(email))) email = null;
+                if (login.length < 2 || password.length < 2) continue;
+                addAccount(login, password, { email: email || null });
+                oneLineHits++;
+            }
+            if (oneLineHits > 0) {
+                console.log("[import] Однострочный формат: распознано " + oneLineHits + " акк.");
+            }
+        }
+
         let blocks = normalizedText
             .split(/^\s*(?:[-=_*#]+|--[A-Za-z0-9_-]+--)\s*$/m)
             .map(b => b.trim())
