@@ -6982,7 +6982,16 @@ async function testDiscordNotification() {
             } catch (_) {
                 st = {};
             }
-            const current = getRubiesDisplayStatus(st);
+            if (acc._bulkSource === "archive" && acc.status) {
+                st = { ...(acc.status || {}), ...st };
+                if (acc.status.rubiesSubscriptionFinished && st.rubiesSubscriptionFinished == null) {
+                    st.rubiesSubscriptionFinished = true;
+                }
+            }
+            let current = getRubiesDisplayStatus(st);
+            if ((!current || current === "—") && (st.rubiesSubscriptionFinished || acc._bulkSource === "archive")) {
+                current = "Подписка завершена";
+            }
             if (fromStatus !== "*" && current !== fromStatus) continue;
             const next = Object.assign({}, st, {
                 rubiesManuallySet: true,
@@ -10547,12 +10556,39 @@ ivan13000;d1f2y3z4
         }).length;
         const finished = cntFinished + allStored.filter(a => a._source === "archive").length;
 
+        // Считаем статусы и из активного списка, и из архива
+        // (иначе «Подписка завершена» всегда 0 — такие аккаунты уходят в RUBIES_ARCHIVE)
         const statusCounts = {};
-        for (const a of RUBIES_ACCOUNTS) {
-            const st = getAccountStatus(a.login) || {};
-            const ds = getRubiesDisplayStatus(st);
+        const seenLogins = new Set();
+        const countStatus = (login, stFallback) => {
+            const key = String(login || "").trim().toLowerCase();
+            if (!key || seenLogins.has(key)) return;
+            seenLogins.add(key);
+            const live = getAccountStatus(login) || {};
+            const st = { ...(stFallback || {}), ...live };
+            // Архив без live-статуса: считаем завершённой подпиской
+            if (stFallback && stFallback.rubiesSubscriptionFinished && live.rubiesSubscriptionFinished == null) {
+                st.rubiesSubscriptionFinished = true;
+            }
+            let ds = getRubiesDisplayStatus(st);
+            if (!ds || ds === "—") {
+                if (st.rubiesSubscriptionFinished || (stFallback && stFallback.archiveReason)) {
+                    ds = "Подписка завершена";
+                } else {
+                    ds = "Не собрано";
+                }
+            }
             statusCounts[ds] = (statusCounts[ds] || 0) + 1;
+        };
+        for (const a of RUBIES_ACCOUNTS) {
+            if (!a || !a.login) continue;
+            countStatus(a.login, null);
         }
+        for (const a of RUBIES_ARCHIVE) {
+            if (!a || !a.login) continue;
+            countStatus(a.login, a.status || null);
+        }
+        const bulkTotalCount = seenLogins.size;
 
         el.innerHTML = `
             <div class="tc-section-title">Statistics</div>
@@ -10586,7 +10622,7 @@ ivan13000;d1f2y3z4
                     <div class="rub-bulk-field">
                         <div class="rub-bulk-label">С статуса</div>
                         <select id="rub-bulk-from" class="rub-bulk-select">
-                            <option value="*">Все аккаунты (${RUBIES_ACCOUNTS.length})</option>
+                            <option value="*">Все аккаунты (${bulkTotalCount})</option>
                             ${RUBIES_STATUS_OPTIONS.map(s => `<option value="${escapeHtml(s)}">${escapeHtml(s)} — ${statusCounts[s] || 0}</option>`).join("")}
                             ${Object.keys(statusCounts).filter(s => !RUBIES_STATUS_OPTIONS.includes(s)).map(s => `<option value="${escapeHtml(s)}">${escapeHtml(s)} — ${statusCounts[s]}</option>`).join("")}
                         </select>
@@ -10688,10 +10724,27 @@ ivan13000;d1f2y3z4
             const fromStatus = fromEl?.value || "*";
             const toStatus = toEl?.value || "";
             let matchCount = 0;
-            for (const acc of RUBIES_ACCOUNTS) {
-                const st = getAccountStatus(acc.login) || {};
-                const cur = getRubiesDisplayStatus(st);
+            const seen = new Set();
+            const consider = (login, stFallback) => {
+                const key = String(login || "").trim().toLowerCase();
+                if (!key || seen.has(key)) return;
+                seen.add(key);
+                const live = getAccountStatus(login) || {};
+                const st = { ...(stFallback || {}), ...live };
+                if (stFallback && stFallback.rubiesSubscriptionFinished && live.rubiesSubscriptionFinished == null) {
+                    st.rubiesSubscriptionFinished = true;
+                }
+                let cur = getRubiesDisplayStatus(st);
+                if ((!cur || cur === "—") && (st.rubiesSubscriptionFinished || (stFallback && stFallback.archiveReason))) {
+                    cur = "Подписка завершена";
+                }
                 if (fromStatus === "*" || cur === fromStatus) matchCount++;
+            };
+            for (const acc of RUBIES_ACCOUNTS) {
+                if (acc && acc.login) consider(acc.login, null);
+            }
+            for (const acc of RUBIES_ARCHIVE) {
+                if (acc && acc.login) consider(acc.login, acc.status || null);
             }
             const fromLabel = fromStatus === "*" ? "всех аккаунтов" : `«${fromStatus}»`;
             prev.textContent = matchCount
@@ -10711,10 +10764,27 @@ ivan13000;d1f2y3z4
             if (fromStatus === toStatus) return showToast("Исходный и целевой статус одинаковые", "info");
 
             let matchCount = 0;
-            for (const acc of RUBIES_ACCOUNTS) {
-                const st = getAccountStatus(acc.login) || {};
-                const cur = getRubiesDisplayStatus(st);
+            const seen = new Set();
+            const consider = (login, stFallback) => {
+                const key = String(login || "").trim().toLowerCase();
+                if (!key || seen.has(key)) return;
+                seen.add(key);
+                const live = getAccountStatus(login) || {};
+                const st = { ...(stFallback || {}), ...live };
+                if (stFallback && stFallback.rubiesSubscriptionFinished && live.rubiesSubscriptionFinished == null) {
+                    st.rubiesSubscriptionFinished = true;
+                }
+                let cur = getRubiesDisplayStatus(st);
+                if ((!cur || cur === "—") && (st.rubiesSubscriptionFinished || (stFallback && stFallback.archiveReason))) {
+                    cur = "Подписка завершена";
+                }
                 if (fromStatus === "*" || cur === fromStatus) matchCount++;
+            };
+            for (const acc of RUBIES_ACCOUNTS) {
+                if (acc && acc.login) consider(acc.login, null);
+            }
+            for (const acc of RUBIES_ARCHIVE) {
+                if (acc && acc.login) consider(acc.login, acc.status || null);
             }
             if (!matchCount) return showToast("Нет аккаунтов с таким статусом", "warning");
 
