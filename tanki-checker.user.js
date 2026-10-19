@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tanki Online — Checker prod. by yuuairline
 // @namespace    http://tampermonkey.net/
-// @version      1.0.4
+// @version      1.0.5
 // @description  Checker + auto 2FA enable
 // @author       yuuairline
 // @match        https://*.tankionline.com/play/
@@ -5999,6 +5999,67 @@ async function testDiscordNotification() {
         return true;
     }
 
+    /** Вернуть аккаунт из архива Daily Rubies в активный список и сбросить «Подписка завершена». */
+    function unarchiveRubiesAccount(login, opts = {}) {
+        const key = String(login || "").trim();
+        if (!key) return false;
+        const lower = key.toLowerCase();
+        const archIdx = RUBIES_ARCHIVE.findIndex(a => String(a.login || "").toLowerCase() === lower);
+        const archived = archIdx >= 0 ? RUBIES_ARCHIVE[archIdx] : null;
+        const alreadyActive = RUBIES_ACCOUNTS.some(a => String(a.login || "").toLowerCase() === lower);
+
+        if (!alreadyActive) {
+            const fromAccounts = ACCOUNTS.find(a => String(a.login || "").toLowerCase() === lower) || {};
+            const base = archived || fromAccounts || { login: key };
+            const restored = {
+                login: base.login || key,
+                password: base.password || fromAccounts.password || "",
+                email: normalizeEmail(base.email || fromAccounts.email),
+                year: base.year ?? fromAccounts.year ?? null,
+                rankFromBase: base.rankFromBase || fromAccounts.rankFromBase || null,
+                bound: base.bound !== undefined ? base.bound : (fromAccounts.bound !== undefined ? fromAccounts.bound : null),
+                twofaSecret: base.twofaSecret || fromAccounts.twofaSecret || null,
+                entranceHash: base.entranceHash || fromAccounts.entranceHash || null,
+                nickname: base.nickname || base.fullName || null
+            };
+            if (!restored.password && !restored.entranceHash) {
+                console.warn("[Daily Rubies] unarchive: нет пароля/hash для", key);
+                return false;
+            }
+            RUBIES_ACCOUNTS.push(restored);
+            saveRubiesAccounts();
+        }
+
+        if (archIdx >= 0) {
+            RUBIES_ARCHIVE.splice(archIdx, 1);
+            saveRubiesArchive();
+        }
+
+        const st = getAccountStatus(key) || (archived && archived.status) || {};
+        st.rubiesSubscriptionFinished = false;
+        st.rubiesEnabled = true;
+        st.rubiesEligible = true;
+        st.rubiesSkipPermanent = false;
+        st.rubiesNoDaily = false;
+        st.rubiesError = null;
+        st.invalid = false;
+        st.blocked = false;
+        st.twofa = false;
+        st.deleted = false;
+        st.reason = null;
+        st.rubiesManuallySet = true;
+        st.rubiesStatus = opts.status || "Не собрано";
+        if (opts.clearDays !== false) {
+            // иначе getRubiesDisplayStatus снова вернёт «Подписка завершена» при rem === 0
+            if (st.rubiesRemainingDays === 0 || st.rubiesRemainingDays === "0") {
+                st.rubiesRemainingDays = null;
+            }
+        }
+        if (st.rubiesStatus !== "Собрано") st.lastRubiesCollection = null;
+        setAccountStatus(key, st);
+        return true;
+    }
+
     function getAllRubiesStoredAccounts() {
         const map = new Map();
         RUBIES_ACCOUNTS.forEach(a => map.set(a.login, { ...a }));
@@ -6903,10 +6964,17 @@ async function testDiscordNotification() {
         if (!toStatus) return { changed: 0, total: 0 };
 
         let changed = 0;
-        const total = RUBIES_ACCOUNTS.length;
+        const total = RUBIES_ACCOUNTS.length + RUBIES_ARCHIVE.length;
         const touched = [];
 
-        for (const acc of RUBIES_ACCOUNTS) {
+        // Активный список + архив (чтобы можно было массово снять «Подписка завершена»)
+        const bulkList = [
+            ...RUBIES_ACCOUNTS.map(a => ({ ...a, _bulkSource: "active" })),
+            ...RUBIES_ARCHIVE.filter(a => a && a.login && !RUBIES_ACCOUNTS.some(x => String(x.login || "").toLowerCase() === String(a.login || "").toLowerCase()))
+                .map(a => ({ ...a, _bulkSource: "archive" }))
+        ];
+
+        for (const acc of bulkList) {
             if (!acc || !acc.login) continue;
             let st = {};
             try {
@@ -6956,8 +7024,23 @@ async function testDiscordNotification() {
                 next.rubiesSkipPermanent = true;
             }
 
+            // Чтобы display не вернул «Подписка завершена» при rem === 0 после ручного сброса
+            if (toStatus !== "Подписка завершена") {
+                if (next.rubiesRemainingDays === 0 || next.rubiesRemainingDays === "0") {
+                    next.rubiesRemainingDays = null;
+                }
+            }
+
             try {
+                if (acc._bulkSource === "archive" && toStatus !== "Подписка завершена") {
+                    unarchiveRubiesAccount(acc.login, { status: toStatus, clearDays: toStatus !== "Подписка завершена" });
+                    // unarchive already wrote status; still apply next flags
+                    const cur = getAccountStatus(acc.login) || {};
+                    Object.assign(cur, next);
+                    setAccountStatus(acc.login, cur);
+                } else {
                 setAccountStatus(acc.login, next);
+                }
                 const check = getAccountStatus(acc.login) || {};
                 if (getRubiesDisplayStatus(check) !== toStatus && check.rubiesStatus !== toStatus) {
                     console.warn("[Daily Rubies] bulk write mismatch", acc.login, check);
@@ -7041,7 +7124,13 @@ async function testDiscordNotification() {
             return "Не собрано";
         }
 
-        if (rem === 0 || st.rubiesSubscriptionFinished) return "Подписка завершена";
+        // Ручной сброс «Подписка завершена» → не форсируем статус обратно, пока флаг сброшен
+        if (st.rubiesManuallySet && st.rubiesSubscriptionFinished !== true
+            && st.rubiesStatus && st.rubiesStatus !== "Подписка завершена") {
+            // оставляем выбранный статус (ниже вернёмся к общим веткам)
+        } else if (rem === 0 || st.rubiesSubscriptionFinished) {
+            return "Подписка завершена";
+        }
 
         if (st.rubiesNoDaily && rem == null) return "Нет дейликов";
         if (st.rubiesStatus === "Нет дейликов" && rem == null) return "Нет дейликов";
@@ -10284,7 +10373,8 @@ ivan13000;d1f2y3z4
             const remaining = st.rubiesRemainingDays != null ? `${st.rubiesRemainingDays}d` : "—";
             const progress = st.rubiesCompletedDays != null || st.rubiesTotalDays != null ? `${st.rubiesCompletedDays || 0}/${st.rubiesTotalDays || 0}` : "—";
             const source = acc._source === "archive" ? "ARCHIVE" : "ACTIVE";
-            const canToggle = acc._source === "active";
+            // Можно менять статус и у архива / «Подписка завершена»
+            const canToggle = true;
 
             return `<div class="tc-account-card" data-rubies-all-login="${escapeHtml(acc.login)}">
                 <div>
@@ -10320,16 +10410,51 @@ ivan13000;d1f2y3z4
                 renderAllRubiesAccountsPanel();
                 updateUI();
             });
-            btn.title = "Клик: ГОТОВ → СОБРАНО → ОШИБКА → ОТКЛ → ГОТОВ";
+            btn.title = "Клик: ГОТОВ → СОБРАНО → ОШИБКА → ОТКЛ → ГОТОВ · Подписка завершена/Архив → ГОТОВ";
         });
     }
 
     function cycleRubiesAccountStatus(login) {
         const st = getAccountStatus(login) || {};
-        const status = getRubiesVisibleStatus({ login, _source: "active", ...st });
+        const inArchive = !RUBIES_ACCOUNTS.some(a => String(a.login || "").toLowerCase() === String(login || "").toLowerCase())
+            && RUBIES_ARCHIVE.some(a => String(a.login || "").toLowerCase() === String(login || "").toLowerCase());
+        const status = getRubiesVisibleStatus({
+            login,
+            _source: inArchive ? "archive" : "active",
+            ...st
+        });
         const text = (status.text || "").toUpperCase();
 
-        if (text === "ГОТОВ" || text === "READY") {
+        // «Подписка завершена» / Архив → вернуть в активные как «Не собрано»
+        if (text === "ПОДПИСКА ЗАВЕРШЕНА" || text === "АРХИВ" || text.includes("ПОДПИСКА")
+            || st.rubiesSubscriptionFinished || inArchive) {
+            const ok = unarchiveRubiesAccount(login, { status: "Не собрано", clearDays: true });
+            if (ok) {
+                showToast(login + ": ГОТОВ (из архива / подписка сброшена)", "success");
+            } else {
+                // fallback без архива
+                st.rubiesEnabled = true;
+                st.rubiesEligible = true;
+                st.rubiesStatus = "Не собрано";
+                st.rubiesSkipPermanent = false;
+                st.rubiesSubscriptionFinished = false;
+                st.rubiesNoDaily = false;
+                st.invalid = false;
+                st.blocked = false;
+                st.twofa = false;
+                st.deleted = false;
+                st.lastRubiesCollection = null;
+                st.reason = null;
+                st.rubiesError = null;
+                st.rubiesManuallySet = true;
+                if (st.rubiesRemainingDays === 0 || st.rubiesRemainingDays === "0") st.rubiesRemainingDays = null;
+                setAccountStatus(login, st);
+                showToast(login + ": ГОТОВ (подписка сброшена)", "success");
+            }
+            return;
+        }
+
+        if (text === "ГОТОВ" || text === "READY" || text === "НЕ СОБРАНО") {
             setRubiesCollectedStatus(login, true);
             showToast(login + ": СОБРАНО", "info");
             return;
@@ -10351,6 +10476,23 @@ ivan13000;d1f2y3z4
             st.rubiesManuallySet = true;
             setAccountStatus(login, st);
             showToast(login + ": ОТКЛЮЧЁН", "info");
+            return;
+        }
+        if (text === "ОТКЛЮЧЁН" || text === "ОТКЛЮЧЕН") {
+            st.rubiesEnabled = true;
+            st.rubiesStatus = "Не собрано";
+            st.rubiesSkipPermanent = false;
+            st.invalid = false;
+            st.blocked = false;
+            st.twofa = false;
+            st.deleted = false;
+            st.rubiesSubscriptionFinished = false;
+            st.lastRubiesCollection = null;
+            st.reason = null;
+            st.rubiesError = null;
+            st.rubiesManuallySet = true;
+            setAccountStatus(login, st);
+            showToast(login + ": ГОТОВ", "success");
             return;
         }
         st.rubiesEnabled = true;
@@ -12143,7 +12285,7 @@ ivan13000;d1f2y3z4
             isRunning = true;
             setTimeout(() => { startChecking(); updateUI(); }, 1800);
         }
-        console.log("◆ Tanki Checker + Rubies v1.1.1 started | Mode:", MODE);
+        console.log("◆ Tanki Checker + Rubies v1.1.2 started | Mode:", MODE);
     }
 
     if (document.readyState === "complete") init();
