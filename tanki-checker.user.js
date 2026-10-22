@@ -747,16 +747,12 @@
         }
 
         const normalizedText = String(text || '').replace(/\r/g, '');
-
-        // Однострочный формат: «Логин: X Пароль: Y Почта: Z Пароль от почты: W»
-        // (весь аккаунт в одной строке — основной импорт из больших дампов)
         {
             const oneLineRe = /Логин\s*:\s*(.+?)\s+Пароль\s*:\s*(.+?)(?:\s+Почта\s*:\s*(.*?))?(?:\s+Пароль\s+от\s+почты\s*:\s*(.*))?$/i;
             let oneLineHits = 0;
             for (const rawLine of normalizedText.split(/\n/)) {
                 const line = rawLine.trim();
                 if (!line || !/Логин\s*:/i.test(line) || !/Пароль\s*:/i.test(line)) continue;
-                // Не считать многострочный блок, где на строке только «Логин: x»
                 if (!/\sПароль\s*:/i.test(line) && !/Пароль\s*:/.test(line)) continue;
                 let m = line.match(oneLineRe);
                 let login = null, password = null, email = null;
@@ -774,7 +770,6 @@
                     email = em ? (em[1] || "").trim() : null;
                 }
                 if (!login || !password) continue;
-                // Несколько паролей через «;» — берём первый
                 if (password.includes(";")) password = password.split(";")[0].trim();
                 if (email && (!email.includes("@") || /^пароль/i.test(email))) email = null;
                 if (login.length < 2 || password.length < 2) continue;
@@ -786,7 +781,6 @@
             }
         }
 
-        // Формат Login: / pass: (англ., построчно)
         {
             let curLogin = null;
             let curEmail = null;
@@ -2085,9 +2079,9 @@
     return proxyRotationManager;
 }
 
-        // =========================================================
-        // START SCREEN — робастный клик «Нажмите любую кнопку»
-        // =========================================================
+    // =========================================================
+    // START SCREEN — робастный клик «Нажмите любую кнопку»
+    // =========================================================
     function isStartScreenVisible() {
         const container = document.querySelector('.StartScreenComponentStyle-mainContainer');
         if (!container || !container.isConnected) return false;
@@ -2541,7 +2535,6 @@
         await closeDialogButtonsOnly();
     }
 
-    /** Закрыть только диалоги/крестики БЕЗ Escape — Escape выкидывает из МИССИЙ в лобби. */
     async function closeDialogButtonsOnly() {
         const selectors = [
             ".ConverterDialogComponentStyle-closeButton",
@@ -2556,7 +2549,6 @@
             for (const el of document.querySelectorAll(sel)) {
                 if (!el || !el.isConnected) continue;
                 if (el.offsetParent === null) continue;
-                // Не кликать по кнопке выхода из раздела (лобби)
                 if (el.closest && el.closest(".BreadcrumbsComponentStyle-exitGameButton, [class*='exitGameButton']")) continue;
                 robustClick(el);
                 await sleep(120);
@@ -2566,19 +2558,15 @@
     }
 
     function isInMissionsSection() {
-        // Хлебные крошки / заголовок раздела
         const section = (typeof getCurrentSectionName === "function" ? getCurrentSectionName() : null) || "";
         if (/миссию|миссии|mission/i.test(section)) return true;
 
-        // Пункты меню миссий (Обычные / Особые / …)
         if (document.querySelector(".MenuComponentStyle-mainMenuItem, [class*='MenuComponentStyle-mainMenuItem']")) {
             return true;
         }
-        // Карточки категорий миссий
         if (document.querySelector(".ScrollingCardsComponentStyle-scrollCard, [class*='ScrollingCardsComponentStyle-scrollCard']")) {
             return true;
         }
-        // Список квестов
         if (document.querySelector(
             ".MainQuestComponentStyle-cardRewardCompleted, [class*='MainQuestComponentStyle'], .TableMainQuestComponentStyle-cardRewardCompletedTable"
         )) {
